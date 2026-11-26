@@ -1,0 +1,21 @@
+# Godot 4 generated cache & exports
+.godot/
+*.translation
+builds/
+
+# Android Gradle build intermediates, caches & >100MB Godot AAR templates
+# (Reinstall Android Build Template in Godot 4.7.2+ after cloning)
+android/build/build/
+android/build/.gradle/
+android/build/libs/
+
+# Keystores & secrets
+*.keystore
+*.jks
+.env
+
+# OS & temporary files
+*.tmp
+*.log
+.DS_Store
+Thumbs.db

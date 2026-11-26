@@ -1,0 +1,47 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
+config_version=5
+
+[application]
+
+config/name="VR Pruning"
+run/main_scene="res://scenes/main.tscn"
+config/features=PackedStringArray("4.7", "Mobile")
+config/icon="res://assets/textures/app_icon_192.png"
+
+[physics]
+
+3d/physics_engine="Jolt Physics"
+
+[rendering]
+
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_3d=2
+viewport/transparent_background=true
+
+[xr]
+
+openxr/enabled=true
+openxr/default_action_map="res://openxr_action_map.tres"
+openxr/reference_space=2
+openxr/environment_blend_mode=2
+openxr/foveation_level=3
+openxr/foveation_dynamic=true
+openxr/extensions/hand_tracking=true
+openxr/extensions/hand_tracking_unobstructed_data_source=true
+openxr/extensions/hand_interaction_profile=true
+openxr/extensions/hand_tracking_aim=true
+openxr/extensions/meta/render_model=true
+openxr/extensions/meta/passthrough=true
+openxr/extensions/meta/hand_tracking_aim=true
+openxr/extensions/meta/hand_tracking_mesh=true
+shaders/enabled=true
+

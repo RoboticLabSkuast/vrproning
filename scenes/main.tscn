@@ -1,0 +1,176 @@
+[gd_scene format=3 uid="uid://d3ar8ormr001"]
+
+[ext_resource type="Script" path="res://scripts/main_xr.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/tree_rig.gd" id="2_tree"]
+[ext_resource type="Script" path="res://scripts/audio_fx.gd" id="3_audio"]
+[ext_resource type="Script" path="res://scripts/arbor_hud_panel.gd" id="4_hud"]
+
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sky"]
+sky_top_color = Color(0.24, 0.48, 0.80, 1)
+sky_horizon_color = Color(0.72, 0.83, 0.92, 1)
+ground_bottom_color = Color(0.18, 0.24, 0.14, 1)
+ground_horizon_color = Color(0.45, 0.52, 0.36, 1)
+sun_angle_max = 22.0
+
+[sub_resource type="Sky" id="Sky_garden"]
+sky_material = SubResource("ProceduralSkyMaterial_sky")
+
+[sub_resource type="Environment" id="Environment_arbor"]
+background_mode = 1
+background_color = Color(0, 0, 0, 0)
+sky = SubResource("Sky_garden")
+ambient_light_source = 3
+ambient_light_sky_contribution = 0.65
+reflected_light_source = 2
+tonemap_mode = 3
+tonemap_exposure = 1.05
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_hand"]
+transparency = 1
+albedo_color = Color(0.84, 0.92, 0.88, 0.36)
+roughness = 0.45
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_beam"]
+top_radius = 0.002
+bottom_radius = 0.002
+height = 1.0
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_beam"]
+shading_mode = 0
+transparency = 1
+albedo_color = Color(0.42, 0.96, 0.56, 0.72)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_patio"]
+top_radius = 2.6
+bottom_radius = 2.65
+height = 0.04
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_patio"]
+albedo_color = Color(0.56, 0.53, 0.47, 1)
+roughness = 0.88
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_lawn"]
+size = Vector2(28, 28)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_lawn"]
+albedo_color = Color(0.24, 0.36, 0.16, 1)
+roughness = 0.95
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_arbor")
+
+[node name="SunLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.829038, -0.352671, 0.433997, 0, 0.776046, 0.630676, -0.559193, -0.522854, 0.643371, 2.5, 4.2, 2.2)
+light_color = Color(1, 0.96, 0.88, 1)
+light_energy = 1.65
+shadow_enabled = true
+shadow_bias = 0.02
+directional_shadow_max_distance = 12.0
+
+[node name="FillLight" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.866025, 0.25, -0.433013, 0, 0.866025, 0.5, 0.5, 0.433013, -0.75, -2.0, 2.6, -2.0)
+light_color = Color(0.75, 0.86, 1.0, 1)
+light_energy = 0.45
+
+[node name="GardenBackdrop" type="Node3D" parent="."]
+visible = false
+
+[node name="StonePatio" type="MeshInstance3D" parent="GardenBackdrop"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.02, -0.85)
+mesh = SubResource("CylinderMesh_patio")
+surface_material_override/0 = SubResource("StandardMaterial3D_patio")
+
+[node name="GardenLawn" type="MeshInstance3D" parent="GardenBackdrop"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.045, 0)
+mesh = SubResource("PlaneMesh_lawn")
+surface_material_override/0 = SubResource("StandardMaterial3D_lawn")
+
+[node name="AudioFX" type="Node3D" parent="."]
+script = ExtResource("3_audio")
+
+[node name="TreeRig" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -0.95)
+script = ExtResource("2_tree")
+
+[node name="ArborHudPanel" type="Node3D" parent="."]
+transform = Transform3D(0.906308, 0, 0.422618, 0, 1, 0, -0.422618, 0, 0.906308, -0.78, 1.18, -0.82)
+script = ExtResource("4_hud")
+
+[node name="XROrigin3D" type="XROrigin3D" parent="."]
+
+[node name="XRCamera3D" type="XRCamera3D" parent="XROrigin3D"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+
+[node name="LeftController" type="XRController3D" parent="XROrigin3D"]
+tracker = &"left_hand"
+pose = &"grip"
+
+[node name="OpenXRFbRenderModel" type="OpenXRFbRenderModel" parent="XROrigin3D/LeftController"]
+
+[node name="LeftRay" type="RayCast3D" parent="XROrigin3D/LeftController"]
+target_position = Vector3(0, 0, -6)
+collision_mask = 4
+
+[node name="Beam" type="MeshInstance3D" parent="XROrigin3D/LeftController/LeftRay"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, -0.5)
+visible = false
+mesh = SubResource("CylinderMesh_beam")
+surface_material_override/0 = SubResource("StandardMaterial3D_beam")
+
+[node name="RightController" type="XRController3D" parent="XROrigin3D"]
+tracker = &"right_hand"
+pose = &"grip"
+
+[node name="RightRay" type="RayCast3D" parent="XROrigin3D/RightController"]
+target_position = Vector3(0, 0, -6)
+collision_mask = 4
+
+[node name="Beam" type="MeshInstance3D" parent="XROrigin3D/RightController/RightRay"]
+transform = Transform3D(1, 0, 0, 0, -4.37114e-08, -1, 0, 1, -4.37114e-08, 0, 0, -0.5)
+visible = false
+mesh = SubResource("CylinderMesh_beam")
+surface_material_override/0 = SubResource("StandardMaterial3D_beam")
+
+[node name="LeftHandAim" type="XRController3D" parent="XROrigin3D"]
+tracker = &"/user/fbhandaim/left"
+
+[node name="LeftHandRay" type="RayCast3D" parent="XROrigin3D/LeftHandAim"]
+target_position = Vector3(0, 0, -6)
+collision_mask = 4
+
+[node name="RightHandAim" type="XRController3D" parent="XROrigin3D"]
+tracker = &"/user/fbhandaim/right"
+
+[node name="RightHandRay" type="RayCast3D" parent="XROrigin3D/RightHandAim"]
+target_position = Vector3(0, 0, -6)
+collision_mask = 4
+
+[node name="LeftHandTracker" type="XRNode3D" parent="XROrigin3D"]
+tracker = &"/user/hand_tracker/left"
+show_when_tracked = true
+
+[node name="OpenXRFbHandTrackingMesh" type="OpenXRFbHandTrackingMesh" parent="XROrigin3D/LeftHandTracker"]
+material = SubResource("StandardMaterial3D_hand")
+
+[node name="XRHandModifier3D" type="XRHandModifier3D" parent="XROrigin3D/LeftHandTracker/OpenXRFbHandTrackingMesh"]
+
+[node name="RightHandTracker" type="XRNode3D" parent="XROrigin3D"]
+tracker = &"/user/hand_tracker/right"
+show_when_tracked = true
+
+[node name="OpenXRFbHandTrackingMesh" type="OpenXRFbHandTrackingMesh" parent="XROrigin3D/RightHandTracker"]
+hand = 1
+material = SubResource("StandardMaterial3D_hand")
+
+[node name="XRHandModifier3D" type="XRHandModifier3D" parent="XROrigin3D/RightHandTracker/OpenXRFbHandTrackingMesh"]
+hand_tracker = &"/user/hand_tracker/right"
+
+[node name="DesktopPreview" type="Node3D" parent="."]
+
+[node name="DesktopCamera" type="Camera3D" parent="DesktopPreview"]
+transform = Transform3D(0.996802, 0.012731, -0.078896, 0, 0.987228, 0.159315, 0.079914, -0.158805, 0.984071, -0.18, 1.32, 0.86)
+fov = 62.0
+
