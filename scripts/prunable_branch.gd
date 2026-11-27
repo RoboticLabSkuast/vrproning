@@ -70,7 +70,7 @@ static func _get_shared_bough_mesh() -> ArrayMesh:
 
 
 func add_foliage_cluster(t_attach: float, local_pos: Vector3, local_basis: Basis, card_scale: float,
-		leaf_tier: int = 0, visible_now: bool = true) -> void:
+		leaf_rank: float = 0.5, visible_now: bool = true) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = _get_shared_bough_mesh()
 	mi.material_override = leaf_material
@@ -86,15 +86,20 @@ func add_foliage_cluster(t_attach: float, local_pos: Vector3, local_basis: Basis
 		"pos": local_pos,
 		"basis": local_basis,
 		"scale": card_scale,
-		"tier": leaf_tier,
+		"rank": leaf_rank,
 	})
 
 
-func set_leaf_tier_visible(max_tier: int) -> void:
+func set_leaf_fraction_visible(amount: float) -> void:
 	for item in leaf_clusters:
 		var mi: MeshInstance3D = item.node
 		if is_instance_valid(mi):
-			mi.visible = int(item.get("tier", 0)) <= max_tier
+			if amount <= 0.001:
+				mi.visible = false
+			elif amount >= 0.999:
+				mi.visible = true
+			else:
+				mi.visible = float(item.get("rank", 0.5)) <= amount
 
 
 func add_bud(t_attach: float, local_pos: Vector3, local_basis: Basis, bud_scale: float, is_outward: bool) -> void:

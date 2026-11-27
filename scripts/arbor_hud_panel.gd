@@ -28,10 +28,15 @@ var _btn_tab_prune: Button
 var _btn_tab_shape: Button
 var _tab_prune_box: VBoxContainer
 var _tab_shape_box: VBoxContainer
+var _leaf_slider: HSlider
+var _lbl_leaves: Label
 var _btn_passthrough: Button
 var _btn_hints: Button
 var _btn_add_tree: Button
 var _btn_remove_tree: Button
+
+var _pointer_was_down: bool = false
+var _last_vp_pos: Vector2 = Vector2(-1.0, -1.0)
 
 
 func _ready() -> void:
@@ -138,15 +143,42 @@ func _build_ui_viewport() -> void:
 		sp_row.add_child(btn)
 		_species_buttons[pair[0]] = btn
 
-	_tab_prune_box.add_child(_make_section_label("LEAF DENSITY"))
+	_lbl_leaves = _make_section_label("LEAVES: 35%  (Drag 0% Zero -> 100% Max)")
+	_tab_prune_box.add_child(_lbl_leaves)
 	var den_row := HBoxContainer.new()
 	den_row.add_theme_constant_override("separation", 10)
 	_tab_prune_box.add_child(den_row)
-	for pair in [["sparse", "Sparse"], ["medium", "Medium"], ["dense", "Dense"]]:
-		var btn := _make_button(pair[1], func(): emit_signal("action_requested", "leaf_density", pair[0]))
-		btn.custom_minimum_size = Vector2(0, 44)
-		den_row.add_child(btn)
-		_density_buttons[pair[0]] = btn
+
+	var b_zero := _make_button("0%", func(): emit_signal("action_requested", "leaf_amount", "0.0"))
+	b_zero.size_flags_horizontal = Control.SIZE_FILL
+	b_zero.custom_minimum_size = Vector2(76, 46)
+	den_row.add_child(b_zero)
+
+	_leaf_slider = HSlider.new()
+	_leaf_slider.min_value = 0.0
+	_leaf_slider.max_value = 100.0
+	_leaf_slider.step = 1.0
+	_leaf_slider.value = 35.0
+	_leaf_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_leaf_slider.custom_minimum_size = Vector2(0, 46)
+	var tr_style := StyleBoxFlat.new()
+	tr_style.bg_color = Color(0.18, 0.25, 0.21)
+	tr_style.set_corner_radius_all(8)
+	tr_style.content_margin_top = 10
+	tr_style.content_margin_bottom = 10
+	var fill_style := StyleBoxFlat.new()
+	fill_style.bg_color = Color(0.30, 0.78, 0.44)
+	fill_style.set_corner_radius_all(8)
+	_leaf_slider.add_theme_stylebox_override("slider", tr_style)
+	_leaf_slider.add_theme_stylebox_override("grabber_area", fill_style)
+	_leaf_slider.add_theme_stylebox_override("grabber_area_highlight", fill_style)
+	_leaf_slider.value_changed.connect(func(v: float): emit_signal("action_requested", "leaf_amount", str(v / 100.0)))
+	den_row.add_child(_leaf_slider)
+
+	var b_max := _make_button("100%", func(): emit_signal("action_requested", "leaf_amount", "1.0"))
+	b_max.size_flags_horizontal = Control.SIZE_FILL
+	b_max.custom_minimum_size = Vector2(88, 46)
+	den_row.add_child(b_max)
 
 	_tab_prune_box.add_child(_make_section_label("ORCHARD TREES & PLACEMENT"))
 	var orchard_row := HBoxContainer.new()
@@ -310,6 +342,51 @@ func click_at_world(world_hit: Vector3) -> bool:
 	return true
 
 
+func update_pointer(has_hit: bool, world_hit: Vector3, is_pressed: bool) -> bool:
+	## Forwards continuous hover, press, drag, and release into SubViewport so HSliders drag smoothly in VR & Desktop.
+	var pressed_now := false
+	if has_hit:
+		var local_hit := to_local(world_hit)
+		var u := clampf((local_hit.x / QUAD_W) + 0.5, 0.0, 1.0)
+		var v := clampf(0.5 - (local_hit.y / QUAD_H), 0.0, 1.0)
+		var vp_pos := Vector2(u * PANEL_W, v * PANEL_H)
+		if _last_vp_pos.x < 0.0 or vp_pos.distance_squared_to(_last_vp_pos) > 0.25:
+			var ev_move := InputEventMouseMotion.new()
+			ev_move.position = vp_pos
+			ev_move.global_position = vp_pos
+			ev_move.relative = Vector2.ZERO if _last_vp_pos.x < 0.0 else (vp_pos - _last_vp_pos)
+			ev_move.button_mask = MOUSE_BUTTON_MASK_LEFT if _pointer_was_down else 0
+			_viewport.push_input(ev_move)
+			_last_vp_pos = vp_pos
+		if is_pressed and not _pointer_was_down:
+			var ev_down := InputEventMouseButton.new()
+			ev_down.button_index = MOUSE_BUTTON_LEFT
+			ev_down.pressed = true
+			ev_down.position = vp_pos
+			ev_down.global_position = vp_pos
+			_viewport.push_input(ev_down)
+			_pointer_was_down = true
+			pressed_now = true
+		elif not is_pressed and _pointer_was_down:
+			var ev_up := InputEventMouseButton.new()
+			ev_up.button_index = MOUSE_BUTTON_LEFT
+			ev_up.pressed = false
+			ev_up.position = vp_pos
+			ev_up.global_position = vp_pos
+			_viewport.push_input(ev_up)
+			_pointer_was_down = false
+	elif _pointer_was_down and not is_pressed:
+		var rel_pos := _last_vp_pos if _last_vp_pos.x >= 0.0 else Vector2.ZERO
+		var ev_up := InputEventMouseButton.new()
+		ev_up.button_index = MOUSE_BUTTON_LEFT
+		ev_up.pressed = false
+		ev_up.position = rel_pos
+		ev_up.global_position = rel_pos
+		_viewport.push_input(ev_up)
+		_pointer_was_down = false
+	return pressed_now
+
+
 func update_stats(stats: Dictionary) -> void:
 	_lbl_species.text = stats.get("species_title", "")
 	_lbl_health.text = "Canopy Health: %d%%  •  Score: %d" % [int(stats.get("health_pct", 0)), int(stats.get("score", 0))]
@@ -339,10 +416,21 @@ func set_active_species(sp_id: String) -> void:
 		b.modulate = Color(0.65, 1.0, 0.72) if k == sp_id else Color.WHITE
 
 
+func set_leaf_amount_state(amount: float) -> void:
+	var pct := int(round(clampf(amount, 0.0, 1.0) * 100.0))
+	if is_instance_valid(_lbl_leaves):
+		var suffix := "Bare Winter" if pct == 0 else ("Full Canopy" if pct == 100 else "Live Foliage")
+		_lbl_leaves.text = "LEAVES: %d%%  (%s)" % [pct, suffix]
+	if is_instance_valid(_leaf_slider) and absf(_leaf_slider.value - float(pct)) > 0.5:
+		_leaf_slider.set_value_no_signal(float(pct))
+
+
 func set_leaf_density_state(density_id: String) -> void:
-	for k in _density_buttons:
-		var b: Button = _density_buttons[k]
-		b.modulate = Color(0.65, 1.0, 0.72) if k == density_id else Color.WHITE
+	match density_id:
+		"none": set_leaf_amount_state(0.0)
+		"sparse": set_leaf_amount_state(0.25)
+		"medium": set_leaf_amount_state(0.60)
+		"dense": set_leaf_amount_state(1.0)
 
 
 func set_passthrough_state(enabled: bool) -> void:

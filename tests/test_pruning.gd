@@ -122,18 +122,20 @@ func _process(_delta: float) -> bool:
 			return true
 	print("[PASS] All 3 botanical species verified (apple, maple, olive)")
 
-	# Test 6: Leaf density switching (Sparse < Medium < Dense) without losing tree state
-	rig.set_leaf_density("sparse")
-	var cnt_sparse := rig.count_visible_leaf_clusters()
-	rig.set_leaf_density("medium")
-	var cnt_med := rig.count_visible_leaf_clusters()
-	rig.set_leaf_density("dense")
-	var cnt_dense := rig.count_visible_leaf_clusters()
-	if not (cnt_sparse > 0 and cnt_sparse < cnt_med and cnt_med < cnt_dense):
-		printerr("FAIL: Leaf density tiers must increase strictly: ", cnt_sparse, " / ", cnt_med, " / ", cnt_dense)
+	# Test 6: Continuous leaf slider (0% zero -> 25% -> 60% -> 100% max) without losing tree state
+	rig.set_leaf_amount(0.0, false)
+	var cnt_zero := rig.count_visible_leaf_clusters()
+	rig.set_leaf_amount(0.25, false)
+	var cnt_low := rig.count_visible_leaf_clusters()
+	rig.set_leaf_amount(0.60, false)
+	var cnt_mid := rig.count_visible_leaf_clusters()
+	rig.set_leaf_amount(1.0, false)
+	var cnt_max := rig.count_visible_leaf_clusters()
+	if not (cnt_zero == 0 and cnt_low > 0 and cnt_low < cnt_mid and cnt_mid < cnt_max):
+		printerr("FAIL: Leaf amount 0..100%% slider invariant failed: ", cnt_zero, " / ", cnt_low, " / ", cnt_mid, " / ", cnt_max)
 		quit(1)
 		return true
-	print("[PASS] Leaf density tiers verified (Sparse=", cnt_sparse, ", Medium=", cnt_med, ", Dense=", cnt_dense, ")")
+	print("[PASS] Leaf slider 0%->100% verified (0%=", cnt_zero, ", 25%=", cnt_low, ", 60%=", cnt_mid, ", 100%=", cnt_max, ")")
 
 	# Test 6b: Verify apple tree shape has 5 spreading orchard scaffolds
 	if rig._trunk == null or rig._trunk.attached_children.size() < 6:

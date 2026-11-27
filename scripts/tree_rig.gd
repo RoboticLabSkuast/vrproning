@@ -41,6 +41,7 @@ const SHAPE_PRESETS := {
 
 var species_id: String = "apple"
 var leaf_density: String = "medium"
+var leaf_amount: float = 0.35
 var tree_seed: int = 101
 var hints_enabled: bool = true
 var custom_shape: Dictionary = {}
@@ -48,6 +49,7 @@ var last_stats: Dictionary = {}
 
 static var _cached_sawdust_mesh: BoxMesh = null
 var _last_saw_fx_ms: int = 0
+var _leaf_seq: int = 0
 
 var _planter_holder: Node3D
 var _tree_root: Node3D
@@ -73,7 +75,7 @@ func _ready() -> void:
 
 	_tree_root = Node3D.new()
 	_tree_root.name = "TreeCanopy"
-	_tree_root.position = Vector3(0.0, 0.355, 0.0)
+	_tree_root.position = Vector3(0.0, 0.345, 0.0)
 	add_child(_tree_root)
 
 	_debris_holder = Node3D.new()
@@ -181,6 +183,7 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 	_perfect_cuts = 0
 	_mistakes = 0
 	_next_branch_id = 1
+	_leaf_seq = 0
 
 	var cfg: Dictionary = TreeSpecies.SPECIES_CONFIG[species_id]
 
@@ -233,7 +236,7 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 	var sucker_count := 2 if species_id != "maple" else 1
 	for s_idx in range(sucker_count):
 		var ang := rng.randf_range(0.0, TAU)
-		var base_p := Vector3(cos(ang) * tr * 0.82, rng.randf_range(0.02, 0.11), sin(ang) * tr * 0.82)
+		var base_p := Vector3(cos(ang) * tr * 0.82, rng.randf_range(0.055, 0.115), sin(ang) * tr * 0.82)
 		var out_dir := Vector3(cos(ang) * 0.45, 0.92, sin(ang) * 0.45).normalized()
 		var s_len := rng.randf_range(0.32, 0.46)
 		var s_pts := _build_organic_polyline(Vector3.ZERO, out_dir, s_len, Vector3.UP * 0.14, 6, 0.02, rng)
@@ -401,44 +404,63 @@ func _spawn_branch(p_kind: TreeSpecies.BranchKind, p_pts: PackedVector3Array,
 
 func _attach_foliage_along(branch: PrunableBranch, t_min: float, t_max: float,
 		count: int, card_scale: float, rng: RandomNumberGenerator,
-		tiers: PackedInt32Array = PackedInt32Array()) -> void:
-	var max_tier := get_leaf_tier_limit()
+		_tiers: PackedInt32Array = PackedInt32Array()) -> void:
 	for k in range(count):
 		var t := lerpf(t_min, t_max, float(k) / maxf(1.0, float(count - 1)))
 		var s := branch.sample_at_t(t)
 		var b_basis := Basis(Vector3.UP, rng.randf_range(0.0, TAU))
 		b_basis = b_basis * Basis(Vector3.RIGHT, rng.randf_range(-0.30, 0.35))
-		var tier: int = tiers[k] if k < tiers.size() else (0 if k == count - 1 else (1 if k % 2 == 1 else 2))
-		branch.add_foliage_cluster(t, s.pos as Vector3, b_basis, card_scale * rng.randf_range(0.85, 1.18), tier, tier <= max_tier)
+		# Low-discrepancy golden-ratio sequence so sliding 0%..100% adds/removes leaves evenly across the crown.
+		var rank := 0.005 + 0.994 * fposmod(float(_leaf_seq) * 0.618033988749895, 1.0)
+		_leaf_seq += 1
+		var vis := leaf_amount > 0.001 and (leaf_amount >= 0.999 or rank <= leaf_amount)
+		branch.add_foliage_cluster(t, s.pos as Vector3, b_basis, card_scale * rng.randf_range(0.85, 1.18), rank, vis)
 
 
-func get_leaf_tier_limit() -> int:
-	return maxi(0, LEAF_DENSITY_ORDER.find(leaf_density))
+func set_leaf_amount(amount: float, emit_note: bool = true) -> void:
+	leaf_amount = clampf(amount, 0.0, 1.0)
+	if leaf_amount <= 0.001:
+		leaf_density = "none"
+	elif leaf_amount < 0.40:
+		leaf_density = "sparse"
+	elif leaf_amount < 0.80:
+		leaf_density = "medium"
+	else:
+		leaf_density = "dense"
+	_apply_leaf_density_to_tree()
+	emit_stats()
+	if emit_note:
+		emit_signal("feedback_emitted", "Leaves: %d%%" % int(round(leaf_amount * 100.0)), Color(0.56, 0.94, 0.68))
 
 
 func set_leaf_density(p_density: String) -> void:
-	var normalized := p_density.to_lower()
-	if not LEAF_DENSITY_ORDER.has(normalized):
-		return
-	leaf_density = normalized
-	_apply_leaf_density_to_tree()
-	emit_stats()
-	var label: String = str(LEAF_DENSITY_LABELS.get(leaf_density, "Medium"))
-	emit_signal("feedback_emitted", "Leaf Density: %s" % label, Color(0.56, 0.94, 0.68))
+	match p_density.to_lower():
+		"none", "zero", "bare":
+			set_leaf_amount(0.0)
+		"sparse":
+			set_leaf_amount(0.25)
+		"medium":
+			set_leaf_amount(0.60)
+		"dense", "max":
+			set_leaf_amount(1.0)
 
 
 func _apply_leaf_density_to_tree() -> void:
-	var max_tier := get_leaf_tier_limit()
 	for b in _all_branches:
 		if is_instance_valid(b) and not b.is_severed_debris:
-			b.set_leaf_tier_visible(max_tier)
+			b.set_leaf_fraction_visible(leaf_amount)
 
 
 func cycle_leaf_density() -> String:
-	var idx := LEAF_DENSITY_ORDER.find(leaf_density)
-	var next_id: String = LEAF_DENSITY_ORDER[(idx + 1) % LEAF_DENSITY_ORDER.size()]
-	set_leaf_density(next_id)
-	return next_id
+	if leaf_amount < 0.15:
+		set_leaf_amount(0.35)
+	elif leaf_amount < 0.55:
+		set_leaf_amount(0.70)
+	elif leaf_amount < 0.95:
+		set_leaf_amount(1.0)
+	else:
+		set_leaf_amount(0.0)
+	return leaf_density
 
 
 func count_visible_leaf_clusters() -> int:

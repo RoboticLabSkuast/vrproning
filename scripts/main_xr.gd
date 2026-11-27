@@ -35,8 +35,10 @@ var _active_tree: TreeRig
 var _grabbed_tree: TreeRig
 var _undo_tree_history: Array[TreeRig] = []
 var _trigger_val_right: float = 0.0
+var _trigger_val_left: float = 0.0
 var _trigger_just_pressed: bool = false
 var _hand_pinch_val: float = 0.0
+var _hand_pinch_val_left: float = 0.0
 var _hand_pinch_just_pressed: bool = false
 
 var _grabbing_tree: bool = false
@@ -77,7 +79,7 @@ func _ready() -> void:
 	_emit_orchard_stats()
 	hud_panel.set_active_tool(pruning_tool.current_tool)
 	hud_panel.set_active_species(tree_rig.species_id)
-	hud_panel.set_leaf_density_state(tree_rig.leaf_density)
+	hud_panel.set_leaf_amount_state(tree_rig.leaf_amount)
 	hud_panel.set_hints_state(tree_rig.hints_enabled)
 	hud_panel.set_orchard_count_state(_trees.size(), MAX_ORCHARD_TREES)
 	hud_panel.update_shape_ui(tree_rig.get_effective_shape())
@@ -103,12 +105,14 @@ func _init_openxr_session() -> void:
 
 	left_ctrl.button_pressed.connect(_on_left_ctrl_btn_pressed)
 	left_ctrl.button_released.connect(_on_left_ctrl_btn_released)
+	left_ctrl.input_float_changed.connect(_on_left_ctrl_float)
 	right_ctrl.button_pressed.connect(_on_right_ctrl_btn_pressed)
 	right_ctrl.input_float_changed.connect(_on_right_ctrl_float)
 
 	right_hand_aim.button_pressed.connect(_on_right_hand_btn_pressed)
 	right_hand_aim.input_float_changed.connect(_on_right_hand_float)
 	left_hand_aim.button_pressed.connect(_on_left_hand_btn_pressed)
+	left_hand_aim.input_float_changed.connect(_on_left_hand_float)
 
 	set_passthrough_enabled(true)
 
@@ -268,7 +272,7 @@ func _process_xr(delta: float) -> void:
 		if absf(rstick.x) > 0.25:
 			xr_origin.rotate_y(-rstick.x * delta * 1.6)
 
-	# Update ray visualizers for UI interaction
+	# Update ray visualizers and forward pointer hover/drag to the 3D HUD panel
 	_update_ray_visual(left_ray)
 	_update_ray_visual(right_ray)
 
@@ -277,9 +281,26 @@ func _process_xr(delta: float) -> void:
 	_trigger_just_pressed = false
 	_hand_pinch_just_pressed = false
 
+	var ui_hit := false
+	var ui_pos := Vector3.ZERO
+	var ui_pressed := false
+	var r_ray := right_hand_ray if using_hand else right_ray
+	var l_ray := left_hand_ray if using_hand else left_ray
+	if r_ray.is_colliding() and r_ray.get_collider() and r_ray.get_collider().has_meta("ui_panel"):
+		ui_hit = true
+		ui_pos = r_ray.get_collision_point()
+		ui_pressed = eff_trigger > 0.55
+	elif l_ray.is_colliding() and l_ray.get_collider() and l_ray.get_collider().has_meta("ui_panel"):
+		ui_hit = true
+		ui_pos = l_ray.get_collision_point()
+		ui_pressed = (_hand_pinch_val_left if using_hand else _trigger_val_left) > 0.55
+
+	if hud_panel.update_pointer(ui_hit, ui_pos, ui_pressed):
+		audio_fx.play_at("ui_click", ui_pos)
+		_pulse_right_haptic(0.35, 0.04)
+
 	# Don't snip branches when pointing ray directly at UI panel
-	var pointing_ui := (right_ray.is_colliding() and right_ray.get_collider() and right_ray.get_collider().has_meta("ui_panel"))
-	if not pointing_ui:
+	if not ui_hit:
 		pruning_tool.update_tool(delta, eff_trigger, eff_just, _pulse_right_haptic)
 	else:
 		pruning_tool.update_tool(delta, 0.0, false)
@@ -336,11 +357,10 @@ func _process_desktop(delta: float) -> void:
 	var q_ui := PhysicsRayQueryParameters3D.create(ray_orig, ray_orig + ray_dir * 6.0, 4)
 	var hit_ui := space_state.intersect_ray(q_ui)
 
-	if _desk_click_pending:
-		_desk_click_pending = false
-		if not hit_ui.is_empty():
-			hud_panel.click_at_world(hit_ui.position)
-			audio_fx.play_at("ui_click", hit_ui.position)
+	var desk_lmb := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or _desk_click_pending
+	_desk_click_pending = false
+	if hud_panel.update_pointer(not hit_ui.is_empty(), hit_ui.position if not hit_ui.is_empty() else Vector3.ZERO, desk_lmb):
+		audio_fx.play_at("ui_click", hit_ui.position)
 
 	# Snap accurately to nearest branch along mouse ray across all orchard trees!
 	var snap_cand := {}
@@ -419,14 +439,15 @@ func _on_right_ctrl_float(btn_name: String, val: float) -> void:
 		_trigger_val_right = val
 
 
+func _on_left_ctrl_float(btn_name: String, val: float) -> void:
+	if btn_name == "trigger":
+		_trigger_val_left = val
+
+
 func _on_right_ctrl_btn_pressed(btn_name: String) -> void:
 	match btn_name:
 		"trigger_click":
-			if right_ray.is_colliding() and right_ray.get_collider() and right_ray.get_collider().has_meta("ui_panel"):
-				hud_panel.click_at_world(right_ray.get_collision_point())
-				audio_fx.play_at("ui_click", right_ray.get_collision_point())
-				_pulse_right_haptic(0.35, 0.04)
-			else:
+			if not (right_ray.is_colliding() and right_ray.get_collider() and right_ray.get_collider().has_meta("ui_panel")):
 				_trigger_just_pressed = true
 		"ax_button":
 			pruning_tool.cycle_tool()
@@ -439,10 +460,6 @@ func _on_right_ctrl_btn_pressed(btn_name: String) -> void:
 
 func _on_left_ctrl_btn_pressed(btn_name: String) -> void:
 	match btn_name:
-		"trigger_click":
-			if left_ray.is_colliding() and left_ray.get_collider() and left_ray.get_collider().has_meta("ui_panel"):
-				hud_panel.click_at_world(left_ray.get_collision_point())
-				audio_fx.play_at("ui_click", left_ray.get_collision_point())
 		"grip_click":
 			_grabbed_tree = _find_closest_tree(left_ctrl.global_position)
 			if is_instance_valid(_grabbed_tree):
@@ -467,18 +484,19 @@ func _on_right_hand_float(btn_name: String, val: float) -> void:
 		_hand_pinch_val = val
 
 
+func _on_left_hand_float(btn_name: String, val: float) -> void:
+	if btn_name == "index_pinch_strength":
+		_hand_pinch_val_left = val
+
+
 func _on_right_hand_btn_pressed(btn_name: String) -> void:
 	if btn_name == "index_pinch":
-		if right_hand_ray.is_colliding() and right_hand_ray.get_collider() and right_hand_ray.get_collider().has_meta("ui_panel"):
-			hud_panel.click_at_world(right_hand_ray.get_collision_point())
-		else:
+		if not (right_hand_ray.is_colliding() and right_hand_ray.get_collider() and right_hand_ray.get_collider().has_meta("ui_panel")):
 			_hand_pinch_just_pressed = true
 
 
-func _on_left_hand_btn_pressed(btn_name: String) -> void:
-	if btn_name == "index_pinch":
-		if left_hand_ray.is_colliding() and left_hand_ray.get_collider() and left_hand_ray.get_collider().has_meta("ui_panel"):
-			hud_panel.click_at_world(left_hand_ray.get_collision_point())
+func _on_left_hand_btn_pressed(_btn_name: String) -> void:
+	pass
 
 
 func _pulse_right_haptic(amp: float, dur: float) -> void:
@@ -533,11 +551,17 @@ func _on_hud_action(action_id: String, payload: String) -> void:
 		"shape_preset":
 			var updated := target.apply_shape_preset(payload)
 			hud_panel.update_shape_ui(updated)
+		"leaf_amount":
+			var amt := float(payload)
+			for r in _trees:
+				if is_instance_valid(r):
+					r.set_leaf_amount(amt, r == target)
+			hud_panel.set_leaf_amount_state(target.leaf_amount)
 		"leaf_density":
 			for r in _trees:
 				if is_instance_valid(r):
 					r.set_leaf_density(payload)
-			hud_panel.set_leaf_density_state(target.leaf_density)
+			hud_panel.set_leaf_amount_state(target.leaf_amount)
 		"add_tree":
 			add_orchard_tree()
 		"remove_tree":
@@ -614,6 +638,7 @@ func add_orchard_tree() -> TreeRig:
 	new_rig.name = "TreeRig_%d" % (_trees.size() + 1)
 	new_rig.species_id = ref.species_id
 	new_rig.leaf_density = ref.leaf_density
+	new_rig.leaf_amount = ref.leaf_amount
 	new_rig.hints_enabled = ref.hints_enabled
 	new_rig.custom_shape = ref.custom_shape.duplicate()
 	new_rig.tree_seed = tree_seed
@@ -680,9 +705,13 @@ func undo_orchard_cut() -> bool:
 
 func _cycle_orchard_leaf_density() -> String:
 	var ref := _active_tree if is_instance_valid(_active_tree) else tree_rig
-	var idx := TreeRig.LEAF_DENSITY_ORDER.find(ref.leaf_density)
-	var next_id: String = TreeRig.LEAF_DENSITY_ORDER[(idx + 1) % TreeRig.LEAF_DENSITY_ORDER.size()]
-	return next_id
+	if ref.leaf_amount < 0.10:
+		return "sparse"
+	elif ref.leaf_amount < 0.45:
+		return "medium"
+	elif ref.leaf_amount < 0.90:
+		return "dense"
+	return "none"
 
 
 func _find_closest_tree(world_pos: Vector3) -> TreeRig:

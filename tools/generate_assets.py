@@ -506,7 +506,7 @@ class MeshBuilder:
                 sn = (s + 1) % segs
                 self.add_triangle(p1, r1[s], r1[sn])
 
-    def add_lathe(self, profile_rz, segs=24):
+    def add_lathe(self, profile_rz, segs=24, planar_top_uv=False, uv_radius=0.28):
         rings = []
         for r, y in profile_rz:
             ring = []
@@ -521,7 +521,14 @@ class MeshBuilder:
             v1 = (i + 1) / max(1, len(rings) - 1)
             for s in range(segs):
                 sn = (s + 1) % segs
-                self.add_quad(r0[s], r0[sn], r1[sn], r1[s], s / segs, v0, (s + 1) / segs, v1)
+                a, b, c, d = r0[sn], r0[s], r1[s], r1[sn]
+                if planar_top_uv:
+                    def puv(pt):
+                        return (0.5 + pt[0] / (2.0 * uv_radius), 0.5 + pt[2] / (2.0 * uv_radius))
+                    self.add_triangle(a, b, c, puv(a), puv(b), puv(c))
+                    self.add_triangle(a, c, d, puv(a), puv(c), puv(d))
+                else:
+                    self.add_quad(a, b, c, d, (s + 1) / segs, v0, s / segs, v1)
 
 
 def export_glb(filepath: str, materials: list, nodes: list):
@@ -817,8 +824,8 @@ def build_planter_pot_glb():
 
     soil = MeshBuilder()
     soil.add_lathe([
-        (0.256, 0.335), (0.19, 0.355), (0.11, 0.372), (0.001, 0.382)
-    ], segs=28)
+        (0.262, 0.352), (0.21, 0.372), (0.14, 0.388), (0.07, 0.398), (0.001, 0.402)
+    ], segs=28, planar_top_uv=True, uv_radius=0.265)
 
     export_glb(os.path.join(MOD_DIR, "planter_pot.glb"), mats, [
         {"name": "PlanterGroup", "parts": [
