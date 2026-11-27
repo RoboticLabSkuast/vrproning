@@ -7,9 +7,9 @@ extends Node3D
 signal action_requested(action_id: String, payload: String)
 
 const PANEL_W := 740
-const PANEL_H := 920
+const PANEL_H := 1100
 const QUAD_W := 0.62
-const QUAD_H := 0.77
+const QUAD_H := 0.92
 
 var _viewport: SubViewport
 var _screen_mesh: MeshInstance3D
@@ -22,8 +22,16 @@ var _lbl_feedback: Label
 var _progress_health: ProgressBar
 var _tool_buttons: Dictionary = {}
 var _species_buttons: Dictionary = {}
+var _density_buttons: Dictionary = {}
+var _shape_value_labels: Dictionary = {}
+var _btn_tab_prune: Button
+var _btn_tab_shape: Button
+var _tab_prune_box: VBoxContainer
+var _tab_shape_box: VBoxContainer
 var _btn_passthrough: Button
 var _btn_hints: Button
+var _btn_add_tree: Button
+var _btn_remove_tree: Button
 
 
 func _ready() -> void:
@@ -59,6 +67,12 @@ func _build_ui_viewport() -> void:
 	title.add_theme_color_override("font_color", Color(0.76, 0.96, 0.74))
 	vbox.add_child(title)
 
+	var credit := Label.new()
+	credit.text = "Built & Developed by CAIML, SKUAST Kashmir"
+	credit.add_theme_font_size_override("font_size", 18)
+	credit.add_theme_color_override("font_color", Color(0.58, 0.88, 0.74))
+	vbox.add_child(credit)
+
 	_lbl_species = Label.new()
 	_lbl_species.text = "Honeycrisp Apple (Orchard)"
 	_lbl_species.add_theme_font_size_override("font_size", 22)
@@ -92,28 +106,63 @@ func _build_ui_viewport() -> void:
 	_lbl_feedback.add_theme_color_override("font_color", Color(0.98, 0.86, 0.45))
 	vbox.add_child(_lbl_feedback)
 
-	vbox.add_child(_make_section_label("PRUNING TOOL (Right A / Scroll)"))
+	var tab_row := HBoxContainer.new()
+	tab_row.add_theme_constant_override("separation", 10)
+	vbox.add_child(tab_row)
+	_btn_tab_prune = _make_button("Prune Lab", func(): show_tab("prune"))
+	_btn_tab_prune.custom_minimum_size = Vector2(0, 42)
+	tab_row.add_child(_btn_tab_prune)
+	_btn_tab_shape = _make_button("Tree Builder (Shape)", func(): show_tab("shape"))
+	_btn_tab_shape.custom_minimum_size = Vector2(0, 42)
+	tab_row.add_child(_btn_tab_shape)
+
+	_tab_prune_box = VBoxContainer.new()
+	_tab_prune_box.add_theme_constant_override("separation", 9)
+	vbox.add_child(_tab_prune_box)
+
+	_tab_prune_box.add_child(_make_section_label("PRUNING TOOL (Right A / Scroll)"))
 	var tool_row := HBoxContainer.new()
 	tool_row.add_theme_constant_override("separation", 10)
-	vbox.add_child(tool_row)
+	_tab_prune_box.add_child(tool_row)
 	for pair in [["secateurs", "Secateurs\n<= 2.4 cm"], ["loppers", "Loppers\n<= 5.0 cm"], ["saw", "Pull Saw\nAny Limb"]]:
 		var btn := _make_button(pair[1], func(): emit_signal("action_requested", "tool", pair[0]))
 		tool_row.add_child(btn)
 		_tool_buttons[pair[0]] = btn
 
-	vbox.add_child(_make_section_label("TREE SPECIES"))
+	_tab_prune_box.add_child(_make_section_label("TREE SPECIES"))
 	var sp_row := HBoxContainer.new()
 	sp_row.add_theme_constant_override("separation", 10)
-	vbox.add_child(sp_row)
+	_tab_prune_box.add_child(sp_row)
 	for pair in [["apple", "Apple\nOrchard"], ["maple", "Japanese\nMaple"], ["olive", "Garden\nOlive"]]:
 		var btn := _make_button(pair[1], func(): emit_signal("action_requested", "species", pair[0]))
 		sp_row.add_child(btn)
 		_species_buttons[pair[0]] = btn
 
-	vbox.add_child(_make_section_label("MIXED REALITY & TREE PLACEMENT"))
+	_tab_prune_box.add_child(_make_section_label("LEAF DENSITY"))
+	var den_row := HBoxContainer.new()
+	den_row.add_theme_constant_override("separation", 10)
+	_tab_prune_box.add_child(den_row)
+	for pair in [["sparse", "Sparse"], ["medium", "Medium"], ["dense", "Dense"]]:
+		var btn := _make_button(pair[1], func(): emit_signal("action_requested", "leaf_density", pair[0]))
+		btn.custom_minimum_size = Vector2(0, 44)
+		den_row.add_child(btn)
+		_density_buttons[pair[0]] = btn
+
+	_tab_prune_box.add_child(_make_section_label("ORCHARD TREES & PLACEMENT"))
+	var orchard_row := HBoxContainer.new()
+	orchard_row.add_theme_constant_override("separation", 10)
+	_tab_prune_box.add_child(orchard_row)
+	_btn_add_tree = _make_button("+ Add Tree (1/6)", func(): emit_signal("action_requested", "add_tree", ""))
+	_btn_add_tree.custom_minimum_size = Vector2(0, 44)
+	orchard_row.add_child(_btn_add_tree)
+	_btn_remove_tree = _make_button("- Remove Tree", func(): emit_signal("action_requested", "remove_tree", ""))
+	_btn_remove_tree.custom_minimum_size = Vector2(0, 44)
+	_btn_remove_tree.disabled = true
+	orchard_row.add_child(_btn_remove_tree)
+
 	var mr_row := HBoxContainer.new()
 	mr_row.add_theme_constant_override("separation", 10)
-	vbox.add_child(mr_row)
+	_tab_prune_box.add_child(mr_row)
 	_btn_passthrough = _make_button("MR Passthrough: ON", func(): emit_signal("action_requested", "toggle_passthrough", ""))
 	mr_row.add_child(_btn_passthrough)
 	_btn_hints = _make_button("Arborist Hints: ON", func(): emit_signal("action_requested", "toggle_hints", ""))
@@ -121,24 +170,64 @@ func _build_ui_viewport() -> void:
 
 	var pos_row := HBoxContainer.new()
 	pos_row.add_theme_constant_override("separation", 10)
-	vbox.add_child(pos_row)
+	_tab_prune_box.add_child(pos_row)
 	pos_row.add_child(_make_button("Center Tree\nIn Front", func(): emit_signal("action_requested", "recenter_tree", "")))
 	pos_row.add_child(_make_button("Tree Height\n+15 cm", func(): emit_signal("action_requested", "height_up", "")))
 	pos_row.add_child(_make_button("Tree Height\n-15 cm", func(): emit_signal("action_requested", "height_down", "")))
 
 	var act_row := HBoxContainer.new()
 	act_row.add_theme_constant_override("separation", 10)
-	vbox.add_child(act_row)
+	_tab_prune_box.add_child(act_row)
 	act_row.add_child(_make_button("Undo Cut\n(B / Z)", func(): emit_signal("action_requested", "undo", "")))
 	act_row.add_child(_make_button("New Tree\n(R)", func(): emit_signal("action_requested", "new_tree", "")))
 	act_row.add_child(_make_button("Scale +", func(): emit_signal("action_requested", "scale_up", "")))
 	act_row.add_child(_make_button("Scale -", func(): emit_signal("action_requested", "scale_down", "")))
+
+	_tab_shape_box = VBoxContainer.new()
+	_tab_shape_box.visible = false
+	_tab_shape_box.add_theme_constant_override("separation", 6)
+	vbox.add_child(_tab_shape_box)
+
+	_tab_shape_box.add_child(_make_section_label("SHAPE PRESETS"))
+	var pre_row := HBoxContainer.new()
+	pre_row.add_theme_constant_override("separation", 8)
+	_tab_shape_box.add_child(pre_row)
+	for pr in [["apple_dome", "Apple Dome"], ["weeping", "Weeping"], ["upright", "Upright"], ["bonsai", "Bonsai"], ["reset", "Reset"]]:
+		var pb := _make_button(pr[1], func(): emit_signal("action_requested", "shape_preset", pr[0]))
+		pb.custom_minimum_size = Vector2(0, 42)
+		pre_row.add_child(pb)
+
+	_tab_shape_box.add_child(_make_section_label("CUSTOM BRANCH & SIZE GENERATOR"))
+	for spec in [
+		["trunk_height", "Trunk Height", 0.10],
+		["trunk_radius", "Trunk Thickness", 0.008],
+		["scaffold_count", "Main Branches", 1],
+		["lateral_count", "Sub-Branches", 1],
+		["twig_count", "Twig Forks", 1],
+		["branch_spread", "Crown Spread", 0.10],
+		["branch_angle_deg", "Branch Angle", 8.0],
+		["droop", "Droop / Arch", 0.04],
+		["gnarl", "Gnarl / Curve", 0.015],
+		["leaf_scale", "Leaf Size", 0.03],
+	]:
+		_add_shape_stepper(_tab_shape_box, spec[0], spec[1], float(spec[2]))
+
+	var sh_bot := HBoxContainer.new()
+	sh_bot.add_theme_constant_override("separation", 10)
+	_tab_shape_box.add_child(sh_bot)
+	var b_seed := _make_button("Random Seed (R)", func(): emit_signal("action_requested", "new_tree", ""))
+	b_seed.custom_minimum_size = Vector2(0, 44)
+	sh_bot.add_child(b_seed)
+	var b_back := _make_button("Back to Prune Lab", func(): show_tab("prune"))
+	b_back.custom_minimum_size = Vector2(0, 44)
+	sh_bot.add_child(b_back)
 
 	var foot := Label.new()
 	foot.text = "Quest 3: Right Trigger=Cut | A=Tool | B=Undo | Left Grip=Move Tree | X=MR"
 	foot.add_theme_font_size_override("font_size", 16)
 	foot.add_theme_color_override("font_color", Color(0.65, 0.72, 0.68))
 	vbox.add_child(foot)
+	show_tab("prune")
 
 
 func _make_section_label(txt: String) -> Label:
@@ -153,7 +242,7 @@ func _make_button(txt: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = txt
 	b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	b.custom_minimum_size = Vector2(0, 62)
+	b.custom_minimum_size = Vector2(0, 52)
 	b.add_theme_font_size_override("font_size", 18)
 	b.pressed.connect(cb)
 	return b
@@ -250,10 +339,97 @@ func set_active_species(sp_id: String) -> void:
 		b.modulate = Color(0.65, 1.0, 0.72) if k == sp_id else Color.WHITE
 
 
+func set_leaf_density_state(density_id: String) -> void:
+	for k in _density_buttons:
+		var b: Button = _density_buttons[k]
+		b.modulate = Color(0.65, 1.0, 0.72) if k == density_id else Color.WHITE
+
+
 func set_passthrough_state(enabled: bool) -> void:
 	_btn_passthrough.text = "MR Passthrough: ON" if enabled else "Garden Sky: ON"
 
 
 func set_hints_state(enabled: bool) -> void:
 	_btn_hints.text = "Arborist Hints: ON" if enabled else "Arborist Hints: OFF"
+
+
+func set_orchard_count_state(count: int, max_trees: int) -> void:
+	if is_instance_valid(_btn_add_tree):
+		_btn_add_tree.text = "+ Add Tree (%d/%d)" % [count, max_trees]
+		_btn_add_tree.disabled = (count >= max_trees)
+	if is_instance_valid(_btn_remove_tree):
+		_btn_remove_tree.disabled = (count <= 1)
+
+
+func show_tab(tab_id: String) -> void:
+	var is_shape := (tab_id == "shape")
+	if is_instance_valid(_tab_prune_box):
+		_tab_prune_box.visible = not is_shape
+	if is_instance_valid(_tab_shape_box):
+		_tab_shape_box.visible = is_shape
+	if is_instance_valid(_btn_tab_prune):
+		_btn_tab_prune.modulate = Color.WHITE if is_shape else Color(0.65, 1.0, 0.72)
+	if is_instance_valid(_btn_tab_shape):
+		_btn_tab_shape.modulate = Color(0.65, 1.0, 0.72) if is_shape else Color.WHITE
+
+
+func toggle_shape_tab() -> void:
+	if is_instance_valid(_tab_shape_box) and _tab_shape_box.visible:
+		show_tab("prune")
+	else:
+		show_tab("shape")
+
+
+func _add_shape_stepper(parent_box: VBoxContainer, key: String, title_txt: String, step_val: float) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	parent_box.add_child(row)
+
+	var lbl := Label.new()
+	lbl.text = title_txt
+	lbl.custom_minimum_size = Vector2(220, 0)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.add_theme_font_size_override("font_size", 18)
+	lbl.add_theme_color_override("font_color", Color(0.88, 0.93, 0.89))
+	row.add_child(lbl)
+
+	var b_minus := _make_button("-", func(): emit_signal("action_requested", "shape_step", "%s:%s" % [key, str(-step_val)]))
+	b_minus.custom_minimum_size = Vector2(105, 38)
+	row.add_child(b_minus)
+
+	var val_lbl := Label.new()
+	val_lbl.text = "--"
+	val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	val_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	val_lbl.custom_minimum_size = Vector2(140, 0)
+	val_lbl.add_theme_font_size_override("font_size", 18)
+	val_lbl.add_theme_color_override("font_color", Color(0.58, 0.96, 0.68))
+	row.add_child(val_lbl)
+	_shape_value_labels[key] = val_lbl
+
+	var b_plus := _make_button("+", func(): emit_signal("action_requested", "shape_step", "%s:%s" % [key, str(step_val)]))
+	b_plus.custom_minimum_size = Vector2(105, 38)
+	row.add_child(b_plus)
+
+
+func update_shape_ui(sh: Dictionary) -> void:
+	for k in _shape_value_labels:
+		var lbl: Label = _shape_value_labels[k]
+		if not is_instance_valid(lbl) or not sh.has(k):
+			continue
+		match k:
+			"trunk_height", "branch_spread":
+				lbl.text = "%.2f m" % float(sh[k])
+			"trunk_radius":
+				lbl.text = "%.1f cm" % (float(sh[k]) * 200.0)
+			"scaffold_count", "lateral_count", "twig_count":
+				lbl.text = "%d" % int(sh[k])
+			"branch_angle_deg":
+				lbl.text = "%.0f deg" % float(sh[k])
+			"droop", "leaf_scale":
+				lbl.text = "%.2f" % float(sh[k])
+			"gnarl":
+				lbl.text = "%.3f" % float(sh[k])
+			_:
+				lbl.text = str(sh[k])
 

@@ -30,6 +30,10 @@ var tree_seed: int = 101
 @onready var desktop_cam: Camera3D = $DesktopPreview/DesktopCamera
 
 var pruning_tool: PruningTool
+var _trees: Array[TreeRig] = []
+var _active_tree: TreeRig
+var _grabbed_tree: TreeRig
+var _undo_tree_history: Array[TreeRig] = []
 var _trigger_val_right: float = 0.0
 var _trigger_just_pressed: bool = false
 var _hand_pinch_val: float = 0.0
@@ -49,15 +53,18 @@ var _desk_click_pending: bool = false
 var _desk_bar_label: Label
 
 
+const MAX_ORCHARD_TREES := 6
+
+
 func _ready() -> void:
-	tree_rig.set_audio_fx(audio_fx)
-	tree_rig.tree_updated.connect(_on_tree_updated)
-	tree_rig.feedback_emitted.connect(_on_feedback)
+	_active_tree = tree_rig
+	_register_tree_rig(tree_rig)
 	hud_panel.action_requested.connect(_on_hud_action)
 
 	pruning_tool = PruningTool.new()
 	pruning_tool.name = "PruningTool"
 	pruning_tool.tree_rig = tree_rig
+	pruning_tool.tree_rigs = _trees
 	pruning_tool.audio_fx = audio_fx
 	pruning_tool.tool_changed.connect(func(tid): hud_panel.set_active_tool(tid))
 
@@ -67,10 +74,13 @@ func _ready() -> void:
 	else:
 		_init_desktop_preview()
 
-	tree_rig.emit_stats()
+	_emit_orchard_stats()
 	hud_panel.set_active_tool(pruning_tool.current_tool)
 	hud_panel.set_active_species(tree_rig.species_id)
+	hud_panel.set_leaf_density_state(tree_rig.leaf_density)
 	hud_panel.set_hints_state(tree_rig.hints_enabled)
+	hud_panel.set_orchard_count_state(_trees.size(), MAX_ORCHARD_TREES)
+	hud_panel.update_shape_ui(tree_rig.get_effective_shape())
 
 
 func _init_openxr_session() -> void:
@@ -105,11 +115,12 @@ func _init_openxr_session() -> void:
 
 func _on_xr_session_begun() -> void:
 	var rates: Array = xr_interface.get_available_display_refresh_rates()
-	var best := 90.0
+	# Cap standalone Quest 3 MR refresh rate at 80 Hz so GPU/thermal headroom stays steady without dynamic blur.
+	var best := 72.0
 	if rates.size() > 0:
 		best = float(rates[0])
 		for r in rates:
-			if float(r) > best and float(r) <= 90.0:
+			if float(r) > best and float(r) <= 80.0:
 				best = float(r)
 		xr_interface.set_display_refresh_rate(best)
 	Engine.physics_ticks_per_second = int(best)
@@ -156,7 +167,7 @@ func _build_laptop_overlay() -> void:
 
 	_desk_bar_label = Label.new()
 	_desk_bar_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_desk_bar_label.text = "Laptop Preview | Left-Click: Cut (Hold for Saw) | Arrows or Right-Drag: Look | WASD/Scroll: Move"
+	_desk_bar_label.text = "Built & Developed by CAIML, SKUAST Kashmir  |  Click: Cut | Arrows/Right-Drag: Look | WASD/Scroll: Move"
 	_desk_bar_label.add_theme_font_size_override("font_size", 14)
 	_desk_bar_label.add_theme_color_override("font_color", Color(0.86, 0.96, 0.88))
 	hbox.add_child(_desk_bar_label)
@@ -165,7 +176,11 @@ func _build_laptop_overlay() -> void:
 		["1: Secateurs", func(): pruning_tool.select_tool("secateurs")],
 		["2: Loppers", func(): pruning_tool.select_tool("loppers")],
 		["3: Pull Saw", func(): pruning_tool.select_tool("saw")],
-		["Z: Undo", func(): tree_rig.undo_last_cut()],
+		["L: Leaves", func(): _on_hud_action("leaf_density", _cycle_orchard_leaf_density())],
+		["B: Shape", func(): hud_panel.toggle_shape_tab()],
+		["T: +Tree", func(): _on_hud_action("add_tree", "")],
+		["-Tree", func(): _on_hud_action("remove_tree", "")],
+		["Z: Undo", func(): undo_orchard_cut()],
 		["R: New Tree", func(): _on_hud_action("new_tree", "")],
 	]
 	for qa in quick_actions:
@@ -228,12 +243,12 @@ func _process_xr(delta: float) -> void:
 			pruning_tool.position = Vector3(0.0, -0.015, -0.025)
 			pruning_tool.rotation_degrees = Vector3(-32.0, 0.0, 0.0)
 
-	# Room-scale tree repositioning via Left Grip
-	if _grabbing_tree and left_ctrl.get_is_active():
+	# Room-scale tree repositioning via Left Grip (moves whichever tree was grabbed)
+	if _grabbing_tree and left_ctrl.get_is_active() and is_instance_valid(_grabbed_tree):
 		var target_pos := left_ctrl.global_position + _grab_offset
 		target_pos.y = maxf(0.0, target_pos.y)
-		tree_rig.global_position = tree_rig.global_position.lerp(target_pos, clampf(delta * 14.0, 0.0, 1.0))
-		tree_rig.rotation.y = left_ctrl.global_rotation.y + _grab_yaw_offset
+		_grabbed_tree.global_position = _grabbed_tree.global_position.lerp(target_pos, clampf(delta * 14.0, 0.0, 1.0))
+		_grabbed_tree.rotation.y = left_ctrl.global_rotation.y + _grab_yaw_offset
 
 	# Thumbstick locomotion on Left Controller
 	if left_ctrl.get_is_active():
@@ -327,10 +342,10 @@ func _process_desktop(delta: float) -> void:
 			hud_panel.click_at_world(hit_ui.position)
 			audio_fx.play_at("ui_click", hit_ui.position)
 
-	# Snap accurately to nearest branch along mouse ray (no pixel-hunting thin twigs!)
+	# Snap accurately to nearest branch along mouse ray across all orchard trees!
 	var snap_cand := {}
 	if hit_ui.is_empty():
-		snap_cand = tree_rig.find_closest_to_ray(ray_orig, ray_dir, 0.045)
+		snap_cand = _find_closest_to_ray_orchard(ray_orig, ray_dir, 0.045)
 	if not snap_cand.is_empty():
 		var snap_pt: Vector3 = snap_cand.world_pos
 		_desk_tool_depth = clampf(ray_orig.distance_to(snap_pt), 0.35, 2.6)
@@ -387,12 +402,16 @@ func _input(event: InputEvent) -> void:
 			KEY_TAB: pruning_tool.cycle_tool()
 			KEY_M: set_passthrough_enabled(not passthrough_enabled)
 			KEY_H:
-				tree_rig.set_hints_enabled(not tree_rig.hints_enabled)
-				hud_panel.set_hints_state(tree_rig.hints_enabled)
-			KEY_Z: tree_rig.undo_last_cut()
+				_on_hud_action("toggle_hints", "")
+			KEY_L:
+				_on_hud_action("leaf_density", _cycle_orchard_leaf_density())
+			KEY_B:
+				hud_panel.toggle_shape_tab()
+			KEY_T:
+				_on_hud_action("add_tree", "")
+			KEY_Z: undo_orchard_cut()
 			KEY_R:
-				tree_seed += 1
-				tree_rig.generate_tree(tree_rig.species_id, tree_seed)
+				_on_hud_action("new_tree", "")
 
 
 func _on_right_ctrl_float(btn_name: String, val: float) -> void:
@@ -414,7 +433,7 @@ func _on_right_ctrl_btn_pressed(btn_name: String) -> void:
 			audio_fx.play_at("ui_click", pruning_tool.global_position)
 			_pulse_right_haptic(0.4, 0.05)
 		"by_button":
-			if tree_rig.undo_last_cut():
+			if undo_orchard_cut():
 				_pulse_right_haptic(0.35, 0.06)
 
 
@@ -425,9 +444,12 @@ func _on_left_ctrl_btn_pressed(btn_name: String) -> void:
 				hud_panel.click_at_world(left_ray.get_collision_point())
 				audio_fx.play_at("ui_click", left_ray.get_collision_point())
 		"grip_click":
-			_grabbing_tree = true
-			_grab_offset = tree_rig.global_position - left_ctrl.global_position
-			_grab_yaw_offset = tree_rig.rotation.y - left_ctrl.global_rotation.y
+			_grabbed_tree = _find_closest_tree(left_ctrl.global_position)
+			if is_instance_valid(_grabbed_tree):
+				_grabbing_tree = true
+				_active_tree = _grabbed_tree
+				_grab_offset = _grabbed_tree.global_position - left_ctrl.global_position
+				_grab_yaw_offset = _grabbed_tree.rotation.y - left_ctrl.global_rotation.y
 		"ax_button":
 			set_passthrough_enabled(not passthrough_enabled)
 		"by_button":
@@ -437,6 +459,7 @@ func _on_left_ctrl_btn_pressed(btn_name: String) -> void:
 func _on_left_ctrl_btn_released(btn_name: String) -> void:
 	if btn_name == "grip_click":
 		_grabbing_tree = false
+		_grabbed_tree = null
 
 
 func _on_right_hand_float(btn_name: String, val: float) -> void:
@@ -468,16 +491,23 @@ func recenter_tree_in_front() -> void:
 	var fwd := -cam.global_transform.basis.z
 	fwd.y = 0.0
 	fwd = fwd.normalized() if fwd.length_squared() > 0.001 else Vector3.FORWARD
+	var right := cam.global_transform.basis.x
+	right.y = 0.0
+	right = right.normalized() if right.length_squared() > 0.001 else Vector3.RIGHT
 	var pos := cam.global_position + fwd * 1.10
 	pos.y = 0.0
-	tree_rig.global_position = pos
+	for i in range(_trees.size()):
+		var r := _trees[i]
+		if not is_instance_valid(r):
+			continue
+		r.global_position = _orchard_slot_position(pos, right, fwd, i)
 	hud_panel.global_position = pos + cam.global_transform.basis.x * (-0.82) + Vector3(0.0, 1.25, 0.0)
 	hud_panel.look_at(Vector3(cam.global_position.x, hud_panel.global_position.y, cam.global_position.z), Vector3.UP)
 	hud_panel.rotate_y(PI)
 
 
-func _on_tree_updated(stats: Dictionary) -> void:
-	hud_panel.update_stats(stats)
+func _on_tree_updated(_stats: Dictionary) -> void:
+	_emit_orchard_stats()
 
 
 func _on_feedback(text: String, color: Color) -> void:
@@ -485,31 +515,245 @@ func _on_feedback(text: String, color: Color) -> void:
 
 
 func _on_hud_action(action_id: String, payload: String) -> void:
+	var target := _active_tree if is_instance_valid(_active_tree) else tree_rig
 	match action_id:
 		"tool":
 			pruning_tool.select_tool(payload)
 		"species":
 			tree_seed += 1
-			tree_rig.generate_tree(payload, tree_seed)
+			target.clear_custom_shape()
+			target.generate_tree(payload, tree_seed)
 			hud_panel.set_active_species(payload)
+			hud_panel.update_shape_ui(target.get_effective_shape())
+		"shape_step":
+			var parts := payload.split(":")
+			if parts.size() == 2:
+				var updated := target.step_shape_param(parts[0], float(parts[1]))
+				hud_panel.update_shape_ui(updated)
+		"shape_preset":
+			var updated := target.apply_shape_preset(payload)
+			hud_panel.update_shape_ui(updated)
+		"leaf_density":
+			for r in _trees:
+				if is_instance_valid(r):
+					r.set_leaf_density(payload)
+			hud_panel.set_leaf_density_state(target.leaf_density)
+		"add_tree":
+			add_orchard_tree()
+		"remove_tree":
+			remove_last_orchard_tree()
 		"toggle_passthrough":
 			set_passthrough_enabled(not passthrough_enabled)
 		"toggle_hints":
-			tree_rig.set_hints_enabled(not tree_rig.hints_enabled)
-			hud_panel.set_hints_state(tree_rig.hints_enabled)
+			var next_hints := not target.hints_enabled
+			for r in _trees:
+				if is_instance_valid(r):
+					r.set_hints_enabled(next_hints)
+			hud_panel.set_hints_state(next_hints)
 		"recenter_tree":
 			recenter_tree_in_front()
 		"height_up":
-			tree_rig.global_position.y += 0.15
+			for r in _trees:
+				if is_instance_valid(r):
+					r.global_position.y += 0.15
 		"height_down":
-			tree_rig.global_position.y = maxf(0.0, tree_rig.global_position.y - 0.15)
+			for r in _trees:
+				if is_instance_valid(r):
+					r.global_position.y = maxf(0.0, r.global_position.y - 0.15)
 		"scale_up":
-			tree_rig.scale = (tree_rig.scale * 1.12).clamp(Vector3.ONE * 0.55, Vector3.ONE * 1.8)
+			for r in _trees:
+				if is_instance_valid(r):
+					r.scale = (r.scale * 1.12).clamp(Vector3.ONE * 0.55, Vector3.ONE * 1.8)
 		"scale_down":
-			tree_rig.scale = (tree_rig.scale * 0.89).clamp(Vector3.ONE * 0.55, Vector3.ONE * 1.8)
+			for r in _trees:
+				if is_instance_valid(r):
+					r.scale = (r.scale * 0.89).clamp(Vector3.ONE * 0.55, Vector3.ONE * 1.8)
 		"undo":
-			tree_rig.undo_last_cut()
+			undo_orchard_cut()
 		"new_tree":
 			tree_seed += 1
-			tree_rig.generate_tree(tree_rig.species_id, tree_seed)
+			target.generate_tree(target.species_id, tree_seed)
+
+
+func _register_tree_rig(rig: TreeRig) -> void:
+	rig.set_audio_fx(audio_fx)
+	if not rig.tree_updated.is_connected(_on_tree_updated):
+		rig.tree_updated.connect(_on_tree_updated)
+	if not rig.feedback_emitted.is_connected(_on_feedback):
+		rig.feedback_emitted.connect(_on_feedback)
+	if not rig.cut_recorded.is_connected(_on_rig_cut_recorded):
+		rig.cut_recorded.connect(_on_rig_cut_recorded.bind(rig))
+	if not _trees.has(rig):
+		_trees.append(rig)
+	if is_instance_valid(pruning_tool):
+		pruning_tool.tree_rigs = _trees
+
+
+func _on_rig_cut_recorded(_branch: PrunableBranch, _res: Dictionary, rig: TreeRig) -> void:
+	_active_tree = rig
+	_undo_tree_history.append(rig)
+
+
+func _orchard_slot_position(base_pos: Vector3, right: Vector3, fwd: Vector3, idx: int) -> Vector3:
+	if idx == 0:
+		return base_pos
+	var ring_step := int((idx + 1) / 2)
+	var side := 1.0 if (idx % 2 == 1) else -1.0
+	var lat_offset := side * float(ring_step) * 1.18
+	var depth_curve := -float(ring_step) * 0.24
+	return Vector3(base_pos.x, maxf(0.0, base_pos.y), base_pos.z) + right * lat_offset + fwd * depth_curve
+
+
+func add_orchard_tree() -> TreeRig:
+	if _trees.size() >= MAX_ORCHARD_TREES:
+		hud_panel.show_feedback("Orchard max reached (%d trees)." % MAX_ORCHARD_TREES, Color(0.96, 0.72, 0.26))
+		return null
+	tree_seed += 1
+	var ref := _active_tree if is_instance_valid(_active_tree) else tree_rig
+	var new_rig := TreeRig.new()
+	new_rig.name = "TreeRig_%d" % (_trees.size() + 1)
+	new_rig.species_id = ref.species_id
+	new_rig.leaf_density = ref.leaf_density
+	new_rig.hints_enabled = ref.hints_enabled
+	new_rig.custom_shape = ref.custom_shape.duplicate()
+	new_rig.tree_seed = tree_seed
+	new_rig.scale = ref.scale
+
+	var parent_node := tree_rig.get_parent()
+	parent_node.add_child(new_rig)
+
+	var cam := xr_camera if xr_active else desktop_cam
+	var fwd := -cam.global_transform.basis.z
+	fwd.y = 0.0
+	fwd = fwd.normalized() if fwd.length_squared() > 0.001 else Vector3.FORWARD
+	var right := cam.global_transform.basis.x
+	right.y = 0.0
+	right = right.normalized() if right.length_squared() > 0.001 else Vector3.RIGHT
+	new_rig.global_position = _orchard_slot_position(tree_rig.global_position, right, fwd, _trees.size())
+
+	_register_tree_rig(new_rig)
+	_active_tree = new_rig
+	hud_panel.set_orchard_count_state(_trees.size(), MAX_ORCHARD_TREES)
+	_emit_orchard_stats()
+	hud_panel.show_feedback("Added Tree #%d (%s)" % [_trees.size(), TreeSpecies.SPECIES_CONFIG[new_rig.species_id].title], Color(0.45, 0.94, 0.58))
+	return new_rig
+
+
+func remove_last_orchard_tree() -> bool:
+	if _trees.size() <= 1:
+		return false
+	var removed: TreeRig = _trees.pop_back()
+	var filtered_hist: Array[TreeRig] = []
+	for h in _undo_tree_history:
+		if is_instance_valid(h) and h != removed:
+			filtered_hist.append(h)
+	_undo_tree_history = filtered_hist
+	if _active_tree == removed:
+		_active_tree = _trees[_trees.size() - 1]
+	if _grabbed_tree == removed:
+		_grabbed_tree = null
+		_grabbing_tree = false
+	if is_instance_valid(removed):
+		removed.queue_free()
+	if is_instance_valid(pruning_tool):
+		pruning_tool.tree_rigs = _trees
+	hud_panel.set_orchard_count_state(_trees.size(), MAX_ORCHARD_TREES)
+	_emit_orchard_stats()
+	hud_panel.show_feedback("Removed tree (%d in orchard)." % _trees.size(), Color(0.75, 0.88, 0.98))
+	return true
+
+
+func undo_orchard_cut() -> bool:
+	while _undo_tree_history.size() > 0:
+		var rig: TreeRig = _undo_tree_history.pop_back()
+		if is_instance_valid(rig) and rig.undo_last_cut():
+			_active_tree = rig
+			_emit_orchard_stats()
+			return true
+	for r in _trees:
+		if is_instance_valid(r) and r.undo_last_cut():
+			_active_tree = r
+			_emit_orchard_stats()
+			return true
+	return false
+
+
+func _cycle_orchard_leaf_density() -> String:
+	var ref := _active_tree if is_instance_valid(_active_tree) else tree_rig
+	var idx := TreeRig.LEAF_DENSITY_ORDER.find(ref.leaf_density)
+	var next_id: String = TreeRig.LEAF_DENSITY_ORDER[(idx + 1) % TreeRig.LEAF_DENSITY_ORDER.size()]
+	return next_id
+
+
+func _find_closest_tree(world_pos: Vector3) -> TreeRig:
+	var best: TreeRig = _active_tree if is_instance_valid(_active_tree) else tree_rig
+	var best_d := 1e9
+	for r in _trees:
+		if not is_instance_valid(r):
+			continue
+		var d := r.global_position.distance_to(world_pos)
+		if d < best_d:
+			best_d = d
+			best = r
+	return best
+
+
+func _find_closest_to_ray_orchard(ray_orig: Vector3, ray_dir: Vector3, max_snap_radius: float) -> Dictionary:
+	var best: Dictionary = {}
+	var best_dist := max_snap_radius
+	for r in _trees:
+		if not is_instance_valid(r):
+			continue
+		var cand := r.find_closest_to_ray(ray_orig, ray_dir, best_dist)
+		if not cand.is_empty() and float(cand.ray_dist) < best_dist:
+			best_dist = float(cand.ray_dist)
+			cand["rig"] = r
+			best = cand
+	return best
+
+
+func _emit_orchard_stats() -> void:
+	var ref := _active_tree if is_instance_valid(_active_tree) else tree_rig
+	if _trees.size() <= 1 and is_instance_valid(ref) and not ref.last_stats.is_empty():
+		hud_panel.update_stats(ref.last_stats)
+		return
+	var targets_rem := 0
+	var targets_tot := 0
+	var healthy_rem := 0
+	var cuts := 0
+	var perfect := 0
+	var mistakes := 0
+	var score := 0
+	var leaves := 0
+	for r in _trees:
+		if not is_instance_valid(r) or r.last_stats.is_empty():
+			continue
+		targets_rem += int(r.last_stats.get("targets_remaining", 0))
+		targets_tot += int(r.last_stats.get("targets_total", 0))
+		healthy_rem += int(r.last_stats.get("healthy_remaining", 0))
+		cuts += int(r.last_stats.get("cuts_made", 0))
+		perfect += int(r.last_stats.get("perfect_cuts", 0))
+		mistakes += int(r.last_stats.get("mistakes", 0))
+		score += int(r.last_stats.get("score", 0))
+		leaves += int(r.last_stats.get("visible_leaves", 0))
+	var tot_safe := maxi(1, targets_tot)
+	var cleared := maxi(0, targets_tot - targets_rem)
+	var health_pct := int(round(clampf(float(cleared) / float(tot_safe) * 100.0 - float(mistakes) * 8.0, 0.0, 100.0)))
+	var sp_title: String = TreeSpecies.SPECIES_CONFIG[ref.species_id].title
+	if _trees.size() > 1:
+		sp_title = "%s  (%d Trees)" % [sp_title, _trees.size()]
+	hud_panel.update_stats({
+		"species_title": sp_title,
+		"species_subtitle": TreeSpecies.SPECIES_CONFIG[ref.species_id].subtitle,
+		"leaf_density": ref.leaf_density,
+		"visible_leaves": leaves,
+		"targets_remaining": targets_rem,
+		"targets_total": targets_tot,
+		"healthy_remaining": healthy_rem,
+		"cuts_made": cuts,
+		"perfect_cuts": perfect,
+		"mistakes": mistakes,
+		"score": score,
+		"health_pct": health_pct,
+	})
 

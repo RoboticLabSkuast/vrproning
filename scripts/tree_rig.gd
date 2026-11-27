@@ -7,13 +7,47 @@ extends Node3D
 
 signal tree_updated(stats: Dictionary)
 signal feedback_emitted(text: String, color: Color)
+signal cut_recorded(branch: PrunableBranch, result: Dictionary)
 
 const PLANTER_SCENE := preload("res://assets/models/planter_pot.glb")
 const FOLIAGE_SHADER := preload("res://shaders/foliage_sway.gdshader")
+const LEAF_DENSITY_ORDER := ["sparse", "medium", "dense"]
+const LEAF_DENSITY_LABELS := {
+	"sparse": "Sparse",
+	"medium": "Medium",
+	"dense": "Dense",
+}
+const MAX_ACTIVE_DEBRIS := 16
+
+const SHAPE_LIMITS := {
+	"trunk_height": {"min": 0.35, "max": 1.35, "step": 0.10, "int": false},
+	"trunk_radius": {"min": 0.030, "max": 0.120, "step": 0.008, "int": false},
+	"scaffold_count": {"min": 2, "max": 8, "step": 1, "int": true},
+	"lateral_count": {"min": 1, "max": 6, "step": 1, "int": true},
+	"twig_count": {"min": 0, "max": 3, "step": 1, "int": true},
+	"branch_spread": {"min": 0.40, "max": 1.35, "step": 0.10, "int": false},
+	"branch_angle_deg": {"min": -15.0, "max": 65.0, "step": 8.0, "int": false},
+	"droop": {"min": -0.26, "max": 0.20, "step": 0.04, "int": false},
+	"gnarl": {"min": 0.00, "max": 0.10, "step": 0.015, "int": false},
+	"leaf_scale": {"min": 0.12, "max": 0.38, "step": 0.03, "int": false},
+}
+
+const SHAPE_PRESETS := {
+	"apple_dome": {"label": "Apple Dome", "trunk_height": 0.68, "trunk_radius": 0.068, "scaffold_count": 5, "lateral_count": 4, "twig_count": 2, "branch_spread": 0.84, "branch_angle_deg": 16.0, "droop": -0.10, "gnarl": 0.052, "leaf_scale": 0.25},
+	"weeping": {"label": "Weeping", "trunk_height": 0.92, "trunk_radius": 0.072, "scaffold_count": 6, "lateral_count": 4, "twig_count": 2, "branch_spread": 0.95, "branch_angle_deg": 8.0, "droop": -0.24, "gnarl": 0.045, "leaf_scale": 0.22},
+	"upright": {"label": "Upright", "trunk_height": 0.82, "trunk_radius": 0.060, "scaffold_count": 5, "lateral_count": 4, "twig_count": 2, "branch_spread": 0.72, "branch_angle_deg": 52.0, "droop": 0.12, "gnarl": 0.025, "leaf_scale": 0.24},
+	"bonsai": {"label": "Bonsai", "trunk_height": 0.44, "trunk_radius": 0.082, "scaffold_count": 4, "lateral_count": 3, "twig_count": 2, "branch_spread": 0.68, "branch_angle_deg": 10.0, "droop": -0.05, "gnarl": 0.090, "leaf_scale": 0.17},
+}
 
 var species_id: String = "apple"
+var leaf_density: String = "medium"
 var tree_seed: int = 101
 var hints_enabled: bool = true
+var custom_shape: Dictionary = {}
+var last_stats: Dictionary = {}
+
+static var _cached_sawdust_mesh: BoxMesh = null
+var _last_saw_fx_ms: int = 0
 
 var _planter_holder: Node3D
 var _tree_root: Node3D
@@ -51,7 +85,7 @@ func _ready() -> void:
 	add_child(_particles_holder)
 
 	_build_planter_and_shadow()
-	generate_tree("apple", tree_seed)
+	generate_tree(species_id, tree_seed)
 
 
 func set_audio_fx(fx: AudioFX) -> void:
@@ -108,6 +142,17 @@ func _build_planter_and_shadow() -> void:
 	sb.add_child(floor_col)
 	_planter_holder.add_child(sb)
 
+	var plaque := Label3D.new()
+	plaque.name = "CreditPlaque"
+	plaque.text = "Built & Developed by CAIML, SKUAST Kashmir"
+	plaque.font_size = 18
+	plaque.pixel_size = 0.00085
+	plaque.outline_size = 4
+	plaque.modulate = Color(0.96, 0.90, 0.76, 0.94)
+	plaque.outline_modulate = Color(0.25, 0.12, 0.06, 0.92)
+	plaque.position = Vector3(0.0, 0.370, 0.304)
+	_planter_holder.add_child(plaque)
+
 
 func _apply_planter_mats(node: Node, tc_mat: Material, soil_mat: Material) -> void:
 	if node is MeshInstance3D:
@@ -159,10 +204,16 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 	var bud_dead := _make_bud_material(Color(0.42, 0.38, 0.35), 0.88)
 
 	# 1. Gnarled Organic Main Trunk (7-point S-curve with root flare!)
-	var th: float = cfg.trunk_height
-	var tr: float = cfg.trunk_radius
-	var lean_x := rng.randf_range(-0.06, 0.06)
-	var lean_z := rng.randf_range(-0.06, 0.06)
+	var sh := get_effective_shape()
+	var th: float = float(sh.trunk_height)
+	var tr: float = float(sh.trunk_radius)
+	var spread: float = float(sh.branch_spread)
+	var leaf_sc: float = float(sh.leaf_scale)
+	var gnarl_val: float = float(sh.gnarl)
+	var droop_val: float = float(sh.droop)
+	var lean_amp := clampf(gnarl_val * 1.25, 0.04, 0.14)
+	var lean_x := rng.randf_range(-lean_amp, lean_amp)
+	var lean_z := rng.randf_range(-lean_amp, lean_amp)
 	var trunk_pts := PackedVector3Array([
 		Vector3(0.0, 0.0, 0.0),
 		Vector3(lean_x * 0.2, th * 0.14, lean_z * 0.2),
@@ -190,20 +241,47 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 		var sucker := _spawn_branch(TreeSpecies.BranchKind.SUCKER, s_pts, s_rads, bark_live, cut_live, leaf_live, bud_live)
 		sucker.position = base_p
 		_trunk.add_attached_branch(0.10, sucker)
-		_attach_foliage_along(sucker, 0.55, 0.98, 2, cfg.leaf_scale * 0.68, rng)
+		_attach_foliage_along(sucker, 0.55, 0.98, 2, leaf_sc * 0.68, rng, PackedInt32Array([1, 0]))
 		_attach_buds_along(sucker, 0.25, 0.96, 4, 0.011, false, rng)
 
 	# 3. Primary Scaffolds -> Secondary Limbs -> Tertiary Twigs -> Dense Boughs & Buds
-	var sc_count: int = cfg.scaffold_count
+	var is_apple := (species_id == "apple")
+	var sc_count: int = maxi(2, int(sh.scaffold_count))
+	var lat_count: int = maxi(1, int(sh.lateral_count))
+	var twig_count: int = maxi(0, int(sh.twig_count))
+	var use_custom_shape := not custom_shape.is_empty()
 	for i in range(sc_count):
-		var t_trunk := lerpf(0.50, 0.96, float(i) / maxf(1.0, float(sc_count - 1)))
+		var t_trunk := lerpf(0.62 if is_apple else 0.50, 0.98 if is_apple else 0.96, float(i) / maxf(1.0, float(sc_count - 1)))
 		var attach := _trunk.sample_at_t(t_trunk)
-		var azim := (float(i) / float(sc_count)) * TAU + rng.randf_range(-0.28, 0.28)
-		var elev := rng.randf_range(0.42, 0.72) if species_id != "maple" else rng.randf_range(0.24, 0.54)
+		var is_apple_top := is_apple and (not use_custom_shape) and (i == sc_count - 1)
+		var azim: float
+		var elev: float
+		var sc_len: float
+		var droop: Vector3
+		if use_custom_shape:
+			azim = (float(i) / float(sc_count)) * TAU + rng.randf_range(-0.26, 0.26)
+			elev = deg_to_rad(float(sh.branch_angle_deg)) + rng.randf_range(-0.12, 0.12)
+			sc_len = spread * rng.randf_range(0.88, 1.14)
+			droop = Vector3(0.0, droop_val, 0.0)
+		elif is_apple:
+			# Spreading broad orchard apple crown: 4 low-angle arching outer limbs + central upper dome limb
+			if is_apple_top:
+				azim = rng.randf_range(0.0, TAU)
+				elev = rng.randf_range(0.38, 0.54)
+				sc_len = spread * rng.randf_range(0.68, 0.80)
+				droop = Vector3(0.0, -0.06, 0.0)
+			else:
+				azim = (float(i) / float(sc_count - 1)) * TAU + rng.randf_range(-0.24, 0.24)
+				elev = rng.randf_range(0.14, 0.34)
+				sc_len = spread * rng.randf_range(0.94, 1.14)
+				droop = Vector3(0.0, -0.11, 0.0)
+		else:
+			azim = (float(i) / float(sc_count)) * TAU + rng.randf_range(-0.28, 0.28)
+			elev = rng.randf_range(0.42, 0.72) if species_id != "maple" else rng.randf_range(0.24, 0.54)
+			sc_len = spread * rng.randf_range(0.90, 1.16)
+			droop = Vector3(0.0, -0.06 if species_id == "maple" else 0.04, 0.0)
 		var dir := Vector3(cos(azim) * cos(elev), sin(elev), sin(azim) * cos(elev)).normalized()
-		var sc_len: float = cfg.branch_spread * rng.randf_range(0.90, 1.16)
-		var droop := Vector3(0.0, -0.06 if species_id == "maple" else 0.04, 0.0)
-		var sc_pts := _build_organic_polyline(Vector3.ZERO, dir, sc_len, droop, 7, 0.045, rng)
+		var sc_pts := _build_organic_polyline(Vector3.ZERO, dir, sc_len, droop, 7, gnarl_val, rng)
 		var sc_rads := _tapered_radii(float(attach.radius) * 0.64, 0.0065, 7)
 
 		var sc := _spawn_branch(TreeSpecies.BranchKind.SCAFFOLD, sc_pts, sc_rads, bark_live, cut_live, leaf_live, bud_live)
@@ -211,16 +289,17 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 		_trunk.add_attached_branch(t_trunk, sc)
 		_attach_buds_along(sc, 0.30, 0.98, 5, 0.014, species_id == "maple", rng)
 
-		# Secondary healthy limbs (4 per scaffold) + Tertiary leafy twigs!
-		var lat_count := 4
+		# Secondary healthy limbs + Tertiary leafy twigs!
 		for l_idx in range(lat_count):
-			var t_lat := lerpf(0.28, 0.88, float(l_idx) / float(lat_count - 1))
+			var t_lat := lerpf(0.26 if is_apple else 0.28, 0.90 if is_apple else 0.88, float(l_idx) / maxf(1.0, float(lat_count - 1)))
 			var l_samp := sc.sample_at_t(t_lat)
 			var side := 1.0 if (l_idx % 2 == 0) else -1.0
 			var l_dir_base: Vector3 = l_samp.dir as Vector3
-			var lat_dir := (l_dir_base.rotated(Vector3.UP, side * rng.randf_range(0.48, 0.92)) + Vector3(0, rng.randf_range(0.04, 0.26), 0)).normalized()
-			var lat_len := rng.randf_range(0.26, 0.42)
-			var lat_pts := _build_organic_polyline(Vector3.ZERO, lat_dir, lat_len, Vector3(0, -0.03, 0), 6, 0.03, rng)
+			var lat_lift := rng.randf_range(0.02, 0.16) if (is_apple or use_custom_shape) else rng.randf_range(0.04, 0.26)
+			var lat_dir := (l_dir_base.rotated(Vector3.UP, side * rng.randf_range(0.48, 0.95)) + Vector3(0, lat_lift, 0)).normalized()
+			var lat_len := clampf(spread * 0.44, 0.18, 0.62) * rng.randf_range(0.82, 1.18)
+			var lat_bend := Vector3(0, droop_val * 0.45 if use_custom_shape else (-0.048 if is_apple else -0.03), 0)
+			var lat_pts := _build_organic_polyline(Vector3.ZERO, lat_dir, lat_len, lat_bend, 6, maxf(0.015, gnarl_val * 0.62), rng)
 			var lat_rads := _tapered_radii(maxf(0.0065, float(l_samp.radius) * 0.66), 0.0025, 6)
 			var lat := _spawn_branch(TreeSpecies.BranchKind.LATERAL, lat_pts, lat_rads, bark_live, cut_live, leaf_live, bud_live)
 			lat.position = l_samp.pos as Vector3
@@ -228,23 +307,25 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 			_attach_buds_along(lat, 0.16, 0.96, 5, 0.013, species_id == "maple", rng)
 
 			# Fine tertiary twigs forked from each secondary limb!
-			for tw_idx in range(2):
-				var t_tw := lerpf(0.45, 0.82, float(tw_idx))
+			for tw_idx in range(twig_count):
+				var t_tw := lerpf(0.45, 0.82, float(tw_idx) / maxf(1.0, float(twig_count - 1)))
 				var tw_samp := lat.sample_at_t(t_tw)
-				var tw_side := -side if tw_idx == 0 else side
-				var tw_dir := ((tw_samp.dir as Vector3).rotated(Vector3.UP, tw_side * rng.randf_range(0.42, 0.82)) + Vector3(0, rng.randf_range(0.05, 0.22), 0)).normalized()
-				var tw_len := rng.randf_range(0.14, 0.22)
-				var tw_pts := _build_organic_polyline(Vector3.ZERO, tw_dir, tw_len, Vector3(0, -0.02, 0), 4, 0.015, rng)
+				var tw_side := -side if tw_idx % 2 == 0 else side
+				var tw_lift := rng.randf_range(0.04, 0.18) if (is_apple or use_custom_shape) else rng.randf_range(0.05, 0.22)
+				var tw_dir := ((tw_samp.dir as Vector3).rotated(Vector3.UP, tw_side * rng.randf_range(0.42, 0.85)) + Vector3(0, tw_lift, 0)).normalized()
+				var tw_len := clampf(spread * 0.24, 0.10, 0.34) * rng.randf_range(0.84, 1.16)
+				var tw_pts := _build_organic_polyline(Vector3.ZERO, tw_dir, tw_len, Vector3(0, droop_val * 0.25, 0), 4, maxf(0.008, gnarl_val * 0.35), rng)
 				var tw_rads := _tapered_radii(maxf(0.0032, float(tw_samp.radius) * 0.68), 0.0015, 4)
 				var twig := _spawn_branch(TreeSpecies.BranchKind.LATERAL, tw_pts, tw_rads, bark_live, cut_live, leaf_live, bud_live)
 				twig.position = tw_samp.pos as Vector3
 				lat.add_attached_branch(t_tw, twig)
-				_attach_foliage_along(twig, 0.45, 1.0, 2, cfg.leaf_scale * 0.92, rng)
+				_attach_foliage_along(twig, 0.42, 1.0, 3, leaf_sc * 0.92, rng, PackedInt32Array([2, 1, 0]))
 				_attach_buds_along(twig, 0.22, 1.0, 3, 0.011, species_id == "maple", rng)
 
-			_attach_foliage_along(lat, 0.58, 1.0, 3, cfg.leaf_scale, rng)
+			var lat_tiers := PackedInt32Array([2, 1, 2, 0 if (l_idx % 2 == 0) else 1])
+			_attach_foliage_along(lat, 0.50, 1.0, 4, leaf_sc, rng, lat_tiers)
 
-		_attach_foliage_along(sc, 0.72, 1.0, 3, cfg.leaf_scale * 1.08, rng)
+		_attach_foliage_along(sc, 0.68, 1.0, 3, leaf_sc * 1.08, rng, PackedInt32Array([2, 1, 0]))
 
 		# Inject realistic pruning defects cleanly along scaffolds
 		if i % 2 == 0:
@@ -262,7 +343,7 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 			sc.add_attached_branch(t_bad, bad_b)
 			_attach_buds_along(bad_b, 0.25, 0.92, 3, 0.009, false, rng)
 			if is_dis:
-				_attach_foliage_along(bad_b, 0.55, 0.95, 2, cfg.leaf_scale * 0.65, rng)
+				_attach_foliage_along(bad_b, 0.52, 0.96, 3, leaf_sc * 0.65, rng, PackedInt32Array([2, 1, 0]))
 		else:
 			var t_ws := rng.randf_range(0.26, 0.54)
 			var w_samp := sc.sample_at_t(t_ws)
@@ -273,7 +354,7 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 			var ws := _spawn_branch(TreeSpecies.BranchKind.WATERSPROUT, w_pts, w_rads, bark_live, cut_live, leaf_live, bud_live)
 			ws.position = w_samp.pos as Vector3
 			sc.add_attached_branch(t_ws, ws)
-			_attach_foliage_along(ws, 0.55, 1.0, 2, cfg.leaf_scale * 0.72, rng)
+			_attach_foliage_along(ws, 0.50, 1.0, 3, leaf_sc * 0.72, rng, PackedInt32Array([2, 1, 0]))
 			_attach_buds_along(ws, 0.22, 0.98, 4, 0.012, false, rng)
 
 		if i == 1 or i == 3:
@@ -287,7 +368,7 @@ func generate_tree(p_species: String, p_seed: int) -> void:
 			var cr := _spawn_branch(TreeSpecies.BranchKind.CROSSING, c_pts, c_rads, bark_live, cut_live, leaf_live, bud_live)
 			cr.position = c_pos
 			sc.add_attached_branch(t_cr, cr)
-			_attach_foliage_along(cr, 0.50, 1.0, 2, cfg.leaf_scale * 0.82, rng)
+			_attach_foliage_along(cr, 0.48, 1.0, 3, leaf_sc * 0.82, rng, PackedInt32Array([2, 1, 0]))
 			_attach_buds_along(cr, 0.22, 0.95, 4, 0.012, species_id == "maple", rng)
 
 	# 4. Heavy dead lower limb (4.4 cm diameter — ideal for Japanese Pruning Saw!)
@@ -319,13 +400,115 @@ func _spawn_branch(p_kind: TreeSpecies.BranchKind, p_pts: PackedVector3Array,
 
 
 func _attach_foliage_along(branch: PrunableBranch, t_min: float, t_max: float,
-		count: int, card_scale: float, rng: RandomNumberGenerator) -> void:
+		count: int, card_scale: float, rng: RandomNumberGenerator,
+		tiers: PackedInt32Array = PackedInt32Array()) -> void:
+	var max_tier := get_leaf_tier_limit()
 	for k in range(count):
 		var t := lerpf(t_min, t_max, float(k) / maxf(1.0, float(count - 1)))
 		var s := branch.sample_at_t(t)
 		var b_basis := Basis(Vector3.UP, rng.randf_range(0.0, TAU))
 		b_basis = b_basis * Basis(Vector3.RIGHT, rng.randf_range(-0.30, 0.35))
-		branch.add_foliage_cluster(t, s.pos as Vector3, b_basis, card_scale * rng.randf_range(0.85, 1.18))
+		var tier: int = tiers[k] if k < tiers.size() else (0 if k == count - 1 else (1 if k % 2 == 1 else 2))
+		branch.add_foliage_cluster(t, s.pos as Vector3, b_basis, card_scale * rng.randf_range(0.85, 1.18), tier, tier <= max_tier)
+
+
+func get_leaf_tier_limit() -> int:
+	return maxi(0, LEAF_DENSITY_ORDER.find(leaf_density))
+
+
+func set_leaf_density(p_density: String) -> void:
+	var normalized := p_density.to_lower()
+	if not LEAF_DENSITY_ORDER.has(normalized):
+		return
+	leaf_density = normalized
+	_apply_leaf_density_to_tree()
+	emit_stats()
+	var label: String = str(LEAF_DENSITY_LABELS.get(leaf_density, "Medium"))
+	emit_signal("feedback_emitted", "Leaf Density: %s" % label, Color(0.56, 0.94, 0.68))
+
+
+func _apply_leaf_density_to_tree() -> void:
+	var max_tier := get_leaf_tier_limit()
+	for b in _all_branches:
+		if is_instance_valid(b) and not b.is_severed_debris:
+			b.set_leaf_tier_visible(max_tier)
+
+
+func cycle_leaf_density() -> String:
+	var idx := LEAF_DENSITY_ORDER.find(leaf_density)
+	var next_id: String = LEAF_DENSITY_ORDER[(idx + 1) % LEAF_DENSITY_ORDER.size()]
+	set_leaf_density(next_id)
+	return next_id
+
+
+func count_visible_leaf_clusters() -> int:
+	var total := 0
+	for b in _all_branches:
+		if not is_instance_valid(b) or b.is_severed_debris:
+			continue
+		for item in b.leaf_clusters:
+			var mi: MeshInstance3D = item.node
+			if is_instance_valid(mi) and mi.visible:
+				total += 1
+	return total
+
+
+func get_effective_shape() -> Dictionary:
+	var cfg: Dictionary = TreeSpecies.SPECIES_CONFIG[species_id]
+	var sh := {
+		"trunk_height": float(cfg.trunk_height),
+		"trunk_radius": float(cfg.trunk_radius),
+		"scaffold_count": int(cfg.scaffold_count),
+		"lateral_count": 4,
+		"twig_count": 2,
+		"branch_spread": float(cfg.branch_spread),
+		"branch_angle_deg": 16.0 if species_id == "apple" else (22.0 if species_id == "maple" else 32.0),
+		"droop": -0.10 if species_id == "apple" else (-0.06 if species_id == "maple" else 0.04),
+		"gnarl": 0.052 if species_id == "apple" else 0.045,
+		"leaf_scale": float(cfg.leaf_scale),
+	}
+	for k in custom_shape:
+		sh[k] = custom_shape[k]
+	return sh
+
+
+func clear_custom_shape() -> void:
+	custom_shape.clear()
+
+
+func step_shape_param(param_key: String, delta_val: float) -> Dictionary:
+	if not SHAPE_LIMITS.has(param_key):
+		return get_effective_shape()
+	var sh := get_effective_shape()
+	var lim: Dictionary = SHAPE_LIMITS[param_key]
+	if bool(lim.get("int", false)):
+		var next_i := clampi(int(round(float(sh[param_key]) + delta_val)), int(lim.min), int(lim.max))
+		custom_shape[param_key] = next_i
+	else:
+		var next_f := clampf(float(sh[param_key]) + delta_val, float(lim.min), float(lim.max))
+		custom_shape[param_key] = snappedf(next_f, 0.001)
+	generate_tree(species_id, tree_seed)
+	var updated := get_effective_shape()
+	emit_signal("feedback_emitted", "Shape updated: %s" % param_key.replace("_", " ").capitalize(), Color(0.60, 0.94, 0.72))
+	return updated
+
+
+func apply_shape_preset(preset_id: String) -> Dictionary:
+	if preset_id == "reset":
+		custom_shape.clear()
+		generate_tree(species_id, tree_seed)
+		emit_signal("feedback_emitted", "Shape reset to species default", Color(0.60, 0.90, 0.98))
+		return get_effective_shape()
+	if not SHAPE_PRESETS.has(preset_id):
+		return get_effective_shape()
+	var p: Dictionary = SHAPE_PRESETS[preset_id]
+	custom_shape.clear()
+	for k in SHAPE_LIMITS:
+		if p.has(k):
+			custom_shape[k] = p[k]
+	generate_tree(species_id, tree_seed)
+	emit_signal("feedback_emitted", "Shape Preset: %s" % str(p.label), Color(0.54, 0.95, 0.66))
+	return get_effective_shape()
 
 
 func _attach_buds_along(branch: PrunableBranch, t_min: float, t_max: float,
@@ -477,7 +660,10 @@ func try_cut_branch(branch: PrunableBranch, t_cut: float, tool_id: String, saw_d
 	if tool_id == "saw":
 		branch.saw_progress += saw_delta / maxf(0.18, dia_cm * 0.14)
 		branch.update_saw_kerf(t_cut, clampf(branch.saw_progress, 0.0, 1.0))
-		_spawn_sawdust_burst(world_cut_pos, 5)
+		var now_ms := Time.get_ticks_msec()
+		if now_ms - _last_saw_fx_ms >= 110:
+			_last_saw_fx_ms = now_ms
+			_spawn_sawdust_burst(world_cut_pos, 5)
 		if branch.saw_progress < 1.0:
 			return {"cut": false, "sawing": true, "progress": branch.saw_progress}
 
@@ -501,11 +687,14 @@ func try_cut_branch(branch: PrunableBranch, t_cut: float, tool_id: String, saw_d
 	debris_body.add_child(sev_branch)
 
 	for item in record.moved_leaves:
+		if not bool(item.get("was_visible", true)):
+			continue
 		var mi := MeshInstance3D.new()
-		mi.mesh = PrunableBranch._create_botanical_bough_mesh(item.scale)
+		mi.mesh = PrunableBranch._get_shared_bough_mesh()
 		mi.material_override = branch.leaf_material
 		mi.position = item.pos - record.cut_pos_local
-		mi.basis = item.basis
+		mi.basis = (item.basis as Basis).scaled(Vector3.ONE * float(item.scale))
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		debris_body.add_child(mi)
 
 	for bd in record.get("moved_buds", []):
@@ -517,7 +706,10 @@ func try_cut_branch(branch: PrunableBranch, t_cut: float, tool_id: String, saw_d
 			bmi.material_override = branch.bud_material
 		bmi.position = (bd.pos as Vector3) - (record.cut_pos_local as Vector3)
 		bmi.basis = (bd.basis as Basis).scaled(Vector3.ONE * float(bd.scale))
+		bmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		debris_body.add_child(bmi)
+
+	_schedule_debris_sleep_and_cap(debris_body)
 
 	for item in record.moved_children:
 		var cb: PrunableBranch = item.node
@@ -580,8 +772,10 @@ func try_cut_branch(branch: PrunableBranch, t_cut: float, tool_id: String, saw_d
 
 	refresh_hints()
 	emit_stats()
+	var res := {"cut": true, "grade": qual.grade, "message": qual.message, "color": qual.color}
+	emit_signal("cut_recorded", branch, res)
 	emit_signal("feedback_emitted", qual.message, qual.color)
-	return {"cut": true, "grade": qual.grade, "message": qual.message, "color": qual.color}
+	return res
 
 
 func undo_last_cut() -> bool:
@@ -600,6 +794,8 @@ func undo_last_cut() -> bool:
 		cb.is_severed_debris = false
 	if is_instance_valid(b):
 		b.restore_from_split(rec)
+	_apply_leaf_density_to_tree()
+	_refresh_active_debris_visibility()
 	_cuts_made = maxi(0, _cuts_made - 1)
 	_score = maxi(0, _score - int(rec.score_delta))
 	if rec.grade == "PERFECT":
@@ -613,13 +809,36 @@ func undo_last_cut() -> bool:
 	return true
 
 
+func _schedule_debris_sleep_and_cap(debris_body: RigidBody3D) -> void:
+	_refresh_active_debris_visibility()
+	get_tree().create_timer(3.0).timeout.connect(func():
+		if is_instance_valid(debris_body):
+			debris_body.freeze = true
+	)
+
+
+func _refresh_active_debris_visibility() -> void:
+	var kids := _debris_holder.get_children()
+	var total := kids.size()
+	for i in range(total):
+		var body := kids[i] as RigidBody3D
+		if body == null or not is_instance_valid(body):
+			continue
+		var keep_vis := (total - i) <= MAX_ACTIVE_DEBRIS
+		body.visible = keep_vis
+		if not keep_vis:
+			body.freeze = true
+
+
 func emit_stats() -> void:
 	var counts := _trunk.count_remaining_targets() if is_instance_valid(_trunk) else {"targets": 0, "healthy": 0}
 	var cleared := maxi(0, _initial_targets - counts.targets)
 	var health_pct := int(round(clampf(float(cleared) / float(_initial_targets) * 100.0 - float(_mistakes) * 8.0, 0.0, 100.0)))
-	emit_signal("tree_updated", {
+	last_stats = {
 		"species_title": TreeSpecies.SPECIES_CONFIG[species_id].title,
 		"species_subtitle": TreeSpecies.SPECIES_CONFIG[species_id].subtitle,
+		"leaf_density": leaf_density,
+		"visible_leaves": count_visible_leaf_clusters(),
 		"targets_remaining": counts.targets,
 		"targets_total": _initial_targets,
 		"healthy_remaining": counts.healthy,
@@ -628,10 +847,18 @@ func emit_stats() -> void:
 		"mistakes": _mistakes,
 		"score": _score,
 		"health_pct": health_pct,
-	})
+	}
+	emit_signal("tree_updated", last_stats)
 
 
 func _spawn_sawdust_burst(world_pos: Vector3, count: int) -> void:
+	if _cached_sawdust_mesh == null:
+		_cached_sawdust_mesh = BoxMesh.new()
+		_cached_sawdust_mesh.size = Vector3(0.008, 0.005, 0.006)
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.84, 0.70, 0.46)
+		mat.roughness = 0.9
+		_cached_sawdust_mesh.material = mat
 	var p := CPUParticles3D.new()
 	p.emitting = true
 	p.one_shot = true
@@ -643,16 +870,11 @@ func _spawn_sawdust_burst(world_pos: Vector3, count: int) -> void:
 	p.initial_velocity_min = 0.45
 	p.initial_velocity_max = 1.45
 	p.gravity = Vector3(0.0, -5.5, 0.0)
-	var mesh := BoxMesh.new()
-	mesh.size = Vector3(0.008, 0.005, 0.006)
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.84, 0.70, 0.46)
-	mat.roughness = 0.9
-	mesh.material = mat
-	p.mesh = mesh
+	p.mesh = _cached_sawdust_mesh
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_particles_holder.add_child(p)
 	p.global_position = world_pos
-	get_tree().create_timer(1.2).timeout.connect(func():
+	get_tree().create_timer(1.1).timeout.connect(func():
 		if is_instance_valid(p):
 			p.queue_free()
 	)

@@ -1,5 +1,7 @@
 # VR Pruning — Meta Quest 3 Mixed Reality Tree Pruning
 
+Built & Developed by **CAIML, SKUAST Kashmir**.
+
 A standalone **Meta Quest 3 Mixed Reality (Color Passthrough)** and **PCVR / Desktop Preview** tree pruning simulator built with **Godot 4.7.2**, **GodotOpenXRVendors v5.2.0**, and **Jolt Physics**.
 
 ## Features

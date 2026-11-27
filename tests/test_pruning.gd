@@ -122,7 +122,27 @@ func _process(_delta: float) -> bool:
 			return true
 	print("[PASS] All 3 botanical species verified (apple, maple, olive)")
 
-	# Test 6: Verify main.tscn loads & instantiates cleanly
+	# Test 6: Leaf density switching (Sparse < Medium < Dense) without losing tree state
+	rig.set_leaf_density("sparse")
+	var cnt_sparse := rig.count_visible_leaf_clusters()
+	rig.set_leaf_density("medium")
+	var cnt_med := rig.count_visible_leaf_clusters()
+	rig.set_leaf_density("dense")
+	var cnt_dense := rig.count_visible_leaf_clusters()
+	if not (cnt_sparse > 0 and cnt_sparse < cnt_med and cnt_med < cnt_dense):
+		printerr("FAIL: Leaf density tiers must increase strictly: ", cnt_sparse, " / ", cnt_med, " / ", cnt_dense)
+		quit(1)
+		return true
+	print("[PASS] Leaf density tiers verified (Sparse=", cnt_sparse, ", Medium=", cnt_med, ", Dense=", cnt_dense, ")")
+
+	# Test 6b: Verify apple tree shape has 5 spreading orchard scaffolds
+	if rig._trunk == null or rig._trunk.attached_children.size() < 6:
+		printerr("FAIL: Apple orchard trunk should host >= 6 basal/scaffold limbs")
+		quit(1)
+		return true
+	print("[PASS] Spreading orchard apple tree silhouette verified")
+
+	# Test 7: Verify main.tscn multi-tree orchard add/cut/undo/remove lifecycle
 	var main_scene := load("res://scenes/main.tscn") as PackedScene
 	if main_scene == null:
 		printerr("FAIL: Could not load res://scenes/main.tscn")
@@ -133,8 +153,54 @@ func _process(_delta: float) -> bool:
 		printerr("FAIL: Could not instantiate res://scenes/main.tscn")
 		quit(1)
 		return true
-	inst.free()
-	print("[PASS] Main scene (res://scenes/main.tscn) loads and instantiates cleanly")
+	root.add_child(inst)
+	var extra_rig: TreeRig = inst.add_orchard_tree()
+	if extra_rig == null or inst._trees.size() != 2 or inst.pruning_tool.tree_rigs.size() != 2:
+		printerr("FAIL: Multi-tree add_orchard_tree() failed")
+		inst.queue_free()
+		quit(1)
+		return true
+	var t2_target: PrunableBranch = null
+	for b in extra_rig._all_branches:
+		if TreeSpecies.should_prune(b.kind) and b.radii[0] * 200.0 <= 2.2:
+			t2_target = b
+			break
+	if t2_target == null or not extra_rig.try_cut_branch(t2_target, 0.12, "secateurs").get("cut", false):
+		printerr("FAIL: Could not prune added orchard tree #2")
+		inst.queue_free()
+		quit(1)
+		return true
+	if not inst.undo_orchard_cut() or t2_target.is_cut:
+		printerr("FAIL: Multi-tree undo_orchard_cut() failed on tree #2")
+		inst.queue_free()
+		quit(1)
+		return true
+	if not inst.remove_last_orchard_tree() or inst._trees.size() != 1:
+		printerr("FAIL: remove_last_orchard_tree() failed")
+		inst.queue_free()
+		quit(1)
+		return true
+	inst.queue_free()
+	print("[PASS] Main scene multi-tree orchard add/cut/undo/remove verified")
+
+	# Test 8: Blender-style parametric tree shape builder (presets + branch/size controls)
+	var bonsai_sh := rig.apply_shape_preset("bonsai")
+	if rig._all_branches.size() < 10 or absf(float(bonsai_sh.trunk_height) - 0.44) > 0.01:
+		printerr("FAIL: Bonsai preset failed")
+		quit(1)
+		return true
+	var stepped_sh := rig.step_shape_param("scaffold_count", 2.0)
+	stepped_sh = rig.step_shape_param("lateral_count", 1.0)
+	stepped_sh = rig.step_shape_param("twig_count", -2.0)
+	stepped_sh = rig.step_shape_param("branch_angle_deg", 32.0)
+	if int(stepped_sh.scaffold_count) != 6 or int(stepped_sh.lateral_count) != 4 or int(stepped_sh.twig_count) != 0:
+		printerr("FAIL: Shape parameter step values mismatch: ", stepped_sh)
+		quit(1)
+		return true
+	rig.apply_shape_preset("upright")
+	rig.apply_shape_preset("weeping")
+	rig.apply_shape_preset("reset")
+	print("[PASS] Blender-style parametric Tree Builder presets & steppers verified")
 
 	print("=== ALL TESTS PASSED ===")
 	quit(0)

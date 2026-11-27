@@ -27,6 +27,7 @@ var leaf_clusters: Array[Dictionary] = [] # { "node": MeshInstance3D, "t": float
 var buds: Array[Dictionary] = [] # { "node": MeshInstance3D, "t": float, "pos": Vector3, "basis": Basis, "scale": float, "outward": bool }
 
 static var _cached_bud_mesh: ArrayMesh = null
+static var _cached_bough_mesh: ArrayMesh = null
 
 var _mesh_instance: MeshInstance3D
 var _static_body: StaticBody3D
@@ -62,13 +63,22 @@ func setup(p_id: int, p_kind: TreeSpecies.BranchKind, p_species: String,
 	rebuild_geometry(false, true)
 
 
-func add_foliage_cluster(t_attach: float, local_pos: Vector3, local_basis: Basis, card_scale: float) -> void:
+static func _get_shared_bough_mesh() -> ArrayMesh:
+	if _cached_bough_mesh == null:
+		_cached_bough_mesh = _create_botanical_bough_mesh(1.0)
+	return _cached_bough_mesh
+
+
+func add_foliage_cluster(t_attach: float, local_pos: Vector3, local_basis: Basis, card_scale: float,
+		leaf_tier: int = 0, visible_now: bool = true) -> void:
 	var mi := MeshInstance3D.new()
-	mi.mesh = _create_botanical_bough_mesh(card_scale)
+	mi.mesh = _get_shared_bough_mesh()
 	mi.material_override = leaf_material
 	mi.position = local_pos
-	mi.basis = local_basis
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	mi.basis = local_basis.scaled(Vector3.ONE * card_scale)
+	# Alpha-scissor foliage cards disable mobile Early-Z if drawn in directional shadow maps
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.visible = visible_now
 	add_child(mi)
 	leaf_clusters.append({
 		"node": mi,
@@ -76,7 +86,15 @@ func add_foliage_cluster(t_attach: float, local_pos: Vector3, local_basis: Basis
 		"pos": local_pos,
 		"basis": local_basis,
 		"scale": card_scale,
+		"tier": leaf_tier,
 	})
+
+
+func set_leaf_tier_visible(max_tier: int) -> void:
+	for item in leaf_clusters:
+		var mi: MeshInstance3D = item.node
+		if is_instance_valid(mi):
+			mi.visible = int(item.get("tier", 0)) <= max_tier
 
 
 func add_bud(t_attach: float, local_pos: Vector3, local_basis: Basis, bud_scale: float, is_outward: bool) -> void:
@@ -88,7 +106,7 @@ func add_bud(t_attach: float, local_pos: Vector3, local_basis: Basis, bud_scale:
 		mi.material_override = bud_material
 	mi.position = local_pos
 	mi.basis = local_basis.scaled(Vector3.ONE * bud_scale)
-	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 	buds.append({
 		"node": mi,
@@ -425,11 +443,10 @@ func rebuild_geometry(cap_start: bool = false, cap_end: bool = true) -> void:
 			st.set_normal(nd); st.set_uv(Vector2(u0, v1)); st.add_vertex(d)
 
 	st.generate_tangents()
-	var bark_mat_inst := bark_material.duplicate() as StandardMaterial3D
 	_mesh_instance.mesh = st.commit()
 	_mesh_instance.material_override = null
-	_mesh_instance.set_surface_override_material(0, bark_mat_inst)
-	_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_mesh_instance.set_surface_override_material(0, bark_material)
+	_mesh_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if is_severed_debris else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 	if cap_start or (cap_end and is_cut):
 		var cap_st := SurfaceTool.new()
@@ -543,6 +560,7 @@ func split_at_t(t_cut: float) -> Dictionary:
 	for item in leaf_clusters:
 		var orig_t: float = float(item.t)
 		if orig_t > t_cut:
+			item["was_visible"] = item.node.visible
 			item.node.visible = false
 			moved_leaves.append(item)
 		else:

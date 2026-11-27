@@ -20,6 +20,7 @@ const TOOL_INFO := {
 
 var current_tool: String = "secateurs"
 var tree_rig: TreeRig
+var tree_rigs: Array[TreeRig] = []
 var audio_fx: AudioFX
 
 var _tool_holder: Node3D
@@ -140,6 +141,15 @@ func set_override_candidate(cand: Dictionary) -> void:
 	_override_candidate = cand
 
 
+func _get_candidate_rigs() -> Array[TreeRig]:
+	if tree_rigs.size() > 0:
+		return tree_rigs
+	var fallback: Array[TreeRig] = []
+	if is_instance_valid(tree_rig):
+		fallback.append(tree_rig)
+	return fallback
+
+
 func update_tool(delta: float, trigger_val: float, trigger_just_pressed: bool,
 		haptic_cb: Callable = Callable()) -> void:
 	_trigger_val = clampf(trigger_val, 0.0, 1.0)
@@ -155,9 +165,17 @@ func update_tool(delta: float, trigger_val: float, trigger_just_pressed: bool,
 		_current_candidate = _override_candidate
 	else:
 		_current_candidate = {}
-		if is_instance_valid(tree_rig):
-			var search_rad: float = TOOL_INFO[current_tool].cut_rad
-			_current_candidate = tree_rig.find_cut_candidate(get_cut_point_world(), search_rad)
+		var search_rad: float = TOOL_INFO[current_tool].cut_rad
+		var best_dist := search_rad
+		var cut_world := get_cut_point_world()
+		for rig in _get_candidate_rigs():
+			if not is_instance_valid(rig):
+				continue
+			var cand := rig.find_cut_candidate(cut_world, best_dist)
+			if not cand.is_empty() and float(cand.dist) < best_dist:
+				best_dist = float(cand.dist)
+				cand["rig"] = rig
+				_current_candidate = cand
 
 	_update_cut_guide_visual()
 
@@ -167,6 +185,9 @@ func update_tool(delta: float, trigger_val: float, trigger_just_pressed: bool,
 
 	var branch: PrunableBranch = _current_candidate.branch
 	var t_cut: float = float(_current_candidate.t)
+	var target_rig: TreeRig = _current_candidate.get("rig", tree_rig)
+	if not is_instance_valid(target_rig):
+		return
 
 	if current_tool in ["secateurs", "loppers"]:
 		var triggered := trigger_just_pressed or (_trigger_val >= 0.76 and not _was_snipped)
@@ -174,7 +195,7 @@ func update_tool(delta: float, trigger_val: float, trigger_just_pressed: bool,
 			_was_snipped = false
 		if triggered:
 			_was_snipped = true
-			var res := tree_rig.try_cut_branch(branch, t_cut, current_tool)
+			var res := target_rig.try_cut_branch(branch, t_cut, current_tool)
 			if haptic_cb.is_valid():
 				if res.get("cut", false):
 					haptic_cb.call(0.85, 0.12)
@@ -200,7 +221,7 @@ func update_tool(delta: float, trigger_val: float, trigger_just_pressed: bool,
 					audio_fx.play_at("saw_stroke", cur_pos, 0.12, -3.0)
 				if haptic_cb.is_valid():
 					haptic_cb.call(0.32, 0.08)
-			var res := tree_rig.try_cut_branch(branch, t_cut, "saw", saw_effort)
+			var res := target_rig.try_cut_branch(branch, t_cut, "saw", saw_effort)
 			if res.get("cut", false) and haptic_cb.is_valid():
 				haptic_cb.call(1.0, 0.20)
 	else:
